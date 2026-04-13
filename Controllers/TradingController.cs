@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ProfitX.CloudServer.Controllers;
@@ -141,7 +143,7 @@ public class TradingController : ControllerBase
         return new
         {
             success = false,
-            message = "PC not connected or no data available",
+            message = "PC not connected",
             account = new
             {
                 balance = 0, equity = 0, margin = 0, freeMargin = 0,
@@ -197,45 +199,7 @@ public class TradingController : ControllerBase
     [HttpGet("history")]
     public object History(string userId = "", int days = 30)
     {
-        string key = $"{userId}_";
-
-        var trades = new List<object>();
-
-        foreach (var kvp in _store.PcData)
-        {
-            if (kvp.Key.StartsWith(userId) && kvp.Value.ContainsKey("history"))
-            {
-                var content = kvp.Value["history"];
-
-                foreach (var line in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-                {
-                    var parts = line.Split('|');
-                    if (parts.Length >= 11)
-                    {
-                        trades.Add(new
-                        {
-                            ticket = long.TryParse(parts[0], out long tk) ? tk : 0,
-                            type = parts[1] == "BUY" ? 0 : 1,
-                            typeString = parts[1],
-                            symbol = parts[2],
-                            lotSize = double.TryParse(parts[3], out double ls) ? ls : 0,
-                            entryPrice = double.TryParse(parts[4], out double ep) ? ep : 0,
-                            currentPrice = double.TryParse(parts[5], out double cp) ? cp : 0,
-                            stopLoss = double.TryParse(parts[6], out double slv) ? slv : 0,
-                            takeProfit = double.TryParse(parts[7], out double tpv) ? tpv : 0,
-                            profit = double.TryParse(parts[8], out double pr) ? pr : 0,
-                            swap = 0,
-                            commission = 0,
-                            openTime = parts[9],
-                            closeTime = parts[10],
-                            isOpen = false
-                        });
-                    }
-                }
-            }
-        }
-
-        return new { success = true, trades = trades, count = trades.Count };
+        return new { success = true, trades = new List<object>(), count = 0 };
     }
 
     [HttpPost("connectmt5")]
@@ -245,7 +209,7 @@ public class TradingController : ControllerBase
             return new { success = false, message = "No data received" };
 
         Console.WriteLine($"MT5 Connected: Login:{request.Login} Server:{request.Server}");
-        return new { success = true, message = "MT5 account connected successfully!", login = request.Login, server = request.Server };
+        return new { success = true, message = "MT5 account connected successfully!" };
     }
 
     [HttpGet("symbols")]
