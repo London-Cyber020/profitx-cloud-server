@@ -114,6 +114,20 @@ public class BridgeController : ControllerBase
             count = _store.RegisteredPCs.Count
         };
     }
+
+    [HttpGet("mt5credentials")]
+    public object Mt5Credentials(string userId = "", string mt5Login = "")
+    {
+        string key = $"{userId}_{mt5Login}";
+
+        if (_store.PcData.ContainsKey(key) && 
+            _store.PcData[key].ContainsKey("mt5Credentials"))
+        {
+            return _store.PcData[key]["mt5Credentials"];
+        }
+
+        return "NONE";
+    }
 }
 
 public class BridgeRegisterRequest
