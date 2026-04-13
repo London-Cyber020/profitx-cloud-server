@@ -266,7 +266,7 @@ public class TradingController : ControllerBase
         {
             // Step 1: Create MetaApi account
             Console.WriteLine("Creating MetaApi account...");
-            string? accountId = await _metaApi.CreateAccountAsync(
+            string? accountId = await _metaApi.GetOrCreateAccountAsync(
                 request.Login, request.Password, request.Server);
 
             if (accountId == null)
