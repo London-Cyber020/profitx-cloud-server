@@ -7,14 +7,16 @@ public class MetaApiService
     private readonly HttpClient _httpClient;
     private readonly string _apiToken;
     private readonly string _apiUrl = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
-    private readonly string _tradingApiUrl = "https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai";
     private readonly DataStore _store;
+    
+    // Cache account IDs to avoid re-creating
+    private readonly Dictionary<string, string> _accountIdCache = new();
 
     public MetaApiService(DataStore store)
     {
         _store = store;
         _apiToken = Environment.GetEnvironmentVariable("METAAPI_TOKEN") ?? "";
-        
+
         _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.Add("auth-token", _apiToken);
         _httpClient.Timeout = TimeSpan.FromSeconds(30);
@@ -24,14 +26,59 @@ public class MetaApiService
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // CREATE METAAPI ACCOUNT (Connect MT5 to MetaApi)
+    // GET OR CREATE ACCOUNT (checks existing first!)
     // ═══════════════════════════════════════════════════════════════
-    public async Task<string?> CreateAccountAsync(string login, string password, string server)
+    public async Task<string?> GetOrCreateAccountAsync(string login, string password, string server)
     {
         try
         {
-            Console.WriteLine($"Creating MetaApi account for login: {login}");
+            Console.WriteLine($"GetOrCreateAccount for login: {login}");
 
+            // Check cache first
+            if (_accountIdCache.ContainsKey(login))
+            {
+                Console.WriteLine($"Using cached account: {_accountIdCache[login]}");
+                return _accountIdCache[login];
+            }
+
+            // Check if account already exists on MetaApi
+            string? existingId = await FindExistingAccountAsync(login);
+            if (existingId != null)
+            {
+                Console.WriteLine($"Found existing account: {existingId}");
+                _accountIdCache[login] = existingId;
+                
+                // Make sure it's deployed
+                await EnsureDeployedAsync(existingId);
+                
+                return existingId;
+            }
+
+            // Create new account
+            Console.WriteLine("Creating new MetaApi account...");
+            string? newId = await CreateAccountAsync(login, password, server);
+            
+            if (newId != null)
+            {
+                _accountIdCache[login] = newId;
+            }
+            
+            return newId;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"GetOrCreateAccount error: {ex.Message}");
+            return null;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // CREATE NEW ACCOUNT
+    // ═══════════════════════════════════════════════════════════════
+    private async Task<string?> CreateAccountAsync(string login, string password, string server)
+    {
+        try
+        {
             var payload = new
             {
                 name = $"ProfitX_{login}",
@@ -49,36 +96,26 @@ public class MetaApiService
             var response = await _httpClient.PostAsync($"{_apiUrl}/users/current/accounts", content);
             string responseBody = await response.Content.ReadAsStringAsync();
 
-            Console.WriteLine($"MetaApi response: {response.StatusCode}");
+            Console.WriteLine($"Create response: {response.StatusCode}");
 
             if (response.IsSuccessStatusCode)
             {
                 var result = JObject.Parse(responseBody);
                 string accountId = result["id"]?.ToString() ?? "";
-                Console.WriteLine($"MetaApi account created: {accountId}");
+                Console.WriteLine($"Account created: {accountId}");
 
-                // Deploy the account
                 await DeployAccountAsync(accountId);
-
                 return accountId;
             }
             else
             {
-                // Check if account already exists
-                var existingId = await FindExistingAccountAsync(login);
-                if (existingId != null)
-                {
-                    Console.WriteLine($"Using existing account: {existingId}");
-                    return existingId;
-                }
-
-                Console.WriteLine($"MetaApi error: {responseBody}");
+                Console.WriteLine($"Create error: {responseBody}");
                 return null;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"MetaApi error: {ex.Message}");
+            Console.WriteLine($"Create error: {ex.Message}");
             return null;
         }
     }
@@ -90,22 +127,36 @@ public class MetaApiService
     {
         try
         {
+            Console.WriteLine($"Searching for existing account: {login}");
+            
             var response = await _httpClient.GetAsync($"{_apiUrl}/users/current/accounts");
             string responseBody = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
             {
                 var accounts = JArray.Parse(responseBody);
+                Console.WriteLine($"Found {accounts.Count} accounts on MetaApi");
+                
                 foreach (var account in accounts)
                 {
-                    if (account["login"]?.ToString() == login)
+                    string accLogin = account["login"]?.ToString() ?? "";
+                    string accId = account["id"]?.ToString() ?? "";
+                    string accState = account["state"]?.ToString() ?? "";
+                    
+                    Console.WriteLine($"  Account: {accLogin} -> {accId} ({accState})");
+                    
+                    if (accLogin == login)
                     {
-                        return account["id"]?.ToString();
+                        Console.WriteLine($"  MATCH FOUND: {accId}");
+                        return accId;
                     }
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Find error: {ex.Message}");
+        }
 
         return null;
     }
@@ -117,18 +168,52 @@ public class MetaApiService
     {
         try
         {
+            Console.WriteLine($"Deploying account: {accountId}");
+            
             var response = await _httpClient.PostAsync(
                 $"{_apiUrl}/users/current/accounts/{accountId}/deploy",
                 new StringContent("", Encoding.UTF8, "application/json"));
 
             Console.WriteLine($"Deploy response: {response.StatusCode}");
-
+            
             // Wait for deployment
-            await Task.Delay(5000);
+            Console.WriteLine("Waiting for deployment...");
+            await Task.Delay(8000);
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Deploy error: {ex.Message}");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ENSURE ACCOUNT IS DEPLOYED
+    // ═══════════════════════════════════════════════════════════════
+    private async Task EnsureDeployedAsync(string accountId)
+    {
+        try
+        {
+            var response = await _httpClient.GetAsync(
+                $"{_apiUrl}/users/current/accounts/{accountId}");
+            
+            if (response.IsSuccessStatusCode)
+            {
+                string body = await response.Content.ReadAsStringAsync();
+                var data = JObject.Parse(body);
+                string state = data["state"]?.ToString() ?? "";
+                
+                Console.WriteLine($"Account state: {state}");
+                
+                if (state != "DEPLOYED")
+                {
+                    Console.WriteLine("Account not deployed, deploying now...");
+                    await DeployAccountAsync(accountId);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"EnsureDeployed error: {ex.Message}");
         }
     }
 
@@ -139,15 +224,24 @@ public class MetaApiService
     {
         try
         {
+            Console.WriteLine($"Getting account info for: {accountId}");
+            
+            // Wait a moment for connection
+            await Task.Delay(2000);
+            
             var response = await _httpClient.GetAsync(
-                $"{_tradingApiUrl}/users/current/accounts/{accountId}/account-information");
+                $"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{accountId}/account-information");
+
+            Console.WriteLine($"Account info response: {response.StatusCode}");
 
             if (response.IsSuccessStatusCode)
             {
                 string responseBody = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"Account info: {responseBody.Substring(0, Math.Min(200, responseBody.Length))}");
+                
                 var data = JObject.Parse(responseBody);
 
-                return new AccountData
+                var accountData = new AccountData
                 {
                     AccountNumber = data["login"]?.ToString() ?? "",
                     AccountName = data["name"]?.ToString() ?? "",
@@ -162,6 +256,14 @@ public class MetaApiService
                     IsConnected = true,
                     LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
                 };
+                
+                Console.WriteLine($"Balance: ${accountData.Balance}, Equity: ${accountData.Equity}");
+                return accountData;
+            }
+            else
+            {
+                string errorBody = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"Account info error: {response.StatusCode} - {errorBody}");
             }
         }
         catch (Exception ex)
@@ -182,7 +284,7 @@ public class MetaApiService
         try
         {
             var response = await _httpClient.GetAsync(
-                $"{_tradingApiUrl}/users/current/accounts/{accountId}/positions");
+                $"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{accountId}/positions");
 
             if (response.IsSuccessStatusCode)
             {
@@ -218,7 +320,105 @@ public class MetaApiService
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // GET PRICE DATA (Candles)
+    // PLACE BUY ORDER
+    // ═══════════════════════════════════════════════════════════════
+    public async Task<bool> PlaceBuyOrderAsync(string accountId, string symbol, double lots, double sl, double tp, string comment)
+    {
+        try
+        {
+            var payload = new
+            {
+                actionType = "ORDER_TYPE_BUY",
+                symbol = symbol,
+                volume = lots,
+                stopLoss = sl,
+                takeProfit = tp,
+                comment = comment
+            };
+
+            string json = JsonConvert.SerializeObject(payload);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await _httpClient.PostAsync(
+                $"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{accountId}/trade", content);
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"BUY: {response.StatusCode} - {responseBody}");
+
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"BUY error: {ex.Message}");
+            return false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PLACE SELL ORDER
+    // ═══════════════════════════════════════════════════════════════
+    public async Task<bool> PlaceSellOrderAsync(string accountId, string symbol, double lots, double sl, double tp, string comment)
+    {
+        try
+        {
+            var payload = new
+            {
+                actionType = "ORDER_TYPE_SELL",
+                symbol = symbol,
+                volume = lots,
+                stopLoss = sl,
+                takeProfit = tp,
+                comment = comment
+            };
+
+            string json = JsonConvert.SerializeObject(payload);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await _httpClient.PostAsync(
+                $"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{accountId}/trade", content);
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"SELL: {response.StatusCode} - {responseBody}");
+
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SELL error: {ex.Message}");
+            return false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // CLOSE POSITION
+    // ═══════════════════════════════════════════════════════════════
+    public async Task<bool> ClosePositionAsync(string accountId, string positionId)
+    {
+        try
+        {
+            var payload = new
+            {
+                actionType = "POSITION_CLOSE_ID",
+                positionId = positionId
+            };
+
+            string json = JsonConvert.SerializeObject(payload);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var response = await _httpClient.PostAsync(
+                $"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{accountId}/trade", content);
+
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Close error: {ex.Message}");
+            return false;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // GET CANDLES FOR STRATEGY
     // ═══════════════════════════════════════════════════════════════
     public async Task<List<CandleData>> GetCandlesAsync(string accountId, string symbol, string timeframe, int count)
     {
@@ -227,7 +427,7 @@ public class MetaApiService
         try
         {
             var response = await _httpClient.GetAsync(
-                $"{_tradingApiUrl}/users/current/accounts/{accountId}/historical-market-data/symbols/{symbol}/timeframes/{timeframe}/candles?limit={count}");
+                $"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{accountId}/historical-market-data/symbols/{symbol}/timeframes/{timeframe}/candles?limit={count}");
 
             if (response.IsSuccessStatusCode)
             {
@@ -264,120 +464,19 @@ public class MetaApiService
         try
         {
             var response = await _httpClient.GetAsync(
-                $"{_tradingApiUrl}/users/current/accounts/{accountId}/symbols/{symbol}/current-price");
+                $"https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/{accountId}/symbols/{symbol}/current-price");
 
             if (response.IsSuccessStatusCode)
             {
                 string responseBody = await response.Content.ReadAsStringAsync();
                 var data = JObject.Parse(responseBody);
 
-                double bid = data["bid"]?.Value<double>() ?? 0;
-                double ask = data["ask"]?.Value<double>() ?? 0;
-
-                return (bid, ask);
+                return (data["bid"]?.Value<double>() ?? 0, data["ask"]?.Value<double>() ?? 0);
             }
         }
         catch { }
 
         return (0, 0);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // PLACE BUY ORDER
-    // ═══════════════════════════════════════════════════════════════
-    public async Task<bool> PlaceBuyOrderAsync(string accountId, string symbol, double lots, double sl, double tp, string comment)
-    {
-        try
-        {
-            var payload = new
-            {
-                actionType = "ORDER_TYPE_BUY",
-                symbol = symbol,
-                volume = lots,
-                stopLoss = sl,
-                takeProfit = tp,
-                comment = comment
-            };
-
-            string json = JsonConvert.SerializeObject(payload);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            var response = await _httpClient.PostAsync(
-                $"{_tradingApiUrl}/users/current/accounts/{accountId}/trade", content);
-
-            string responseBody = await response.Content.ReadAsStringAsync();
-            Console.WriteLine($"BUY order: {response.StatusCode} - {responseBody}");
-
-            return response.IsSuccessStatusCode;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"BUY error: {ex.Message}");
-            return false;
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // PLACE SELL ORDER
-    // ═══════════════════════════════════════════════════════════════
-    public async Task<bool> PlaceSellOrderAsync(string accountId, string symbol, double lots, double sl, double tp, string comment)
-    {
-        try
-        {
-            var payload = new
-            {
-                actionType = "ORDER_TYPE_SELL",
-                symbol = symbol,
-                volume = lots,
-                stopLoss = sl,
-                takeProfit = tp,
-                comment = comment
-            };
-
-            string json = JsonConvert.SerializeObject(payload);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            var response = await _httpClient.PostAsync(
-                $"{_tradingApiUrl}/users/current/accounts/{accountId}/trade", content);
-
-            string responseBody = await response.Content.ReadAsStringAsync();
-            Console.WriteLine($"SELL order: {response.StatusCode} - {responseBody}");
-
-            return response.IsSuccessStatusCode;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"SELL error: {ex.Message}");
-            return false;
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // CLOSE POSITION
-    // ═══════════════════════════════════════════════════════════════
-    public async Task<bool> ClosePositionAsync(string accountId, string positionId)
-    {
-        try
-        {
-            var payload = new
-            {
-                actionType = "POSITION_CLOSE_ID",
-                positionId = positionId
-            };
-
-            string json = JsonConvert.SerializeObject(payload);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            var response = await _httpClient.PostAsync(
-                $"{_tradingApiUrl}/users/current/accounts/{accountId}/trade", content);
-
-            return response.IsSuccessStatusCode;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Close error: {ex.Message}");
-            return false;
-        }
     }
 }
 
