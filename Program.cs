@@ -12,7 +12,6 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddSingleton<DataStore>();
-builder.Services.AddSingleton<MetaApiService>();
 
 var app = builder.Build();
 
@@ -22,24 +21,22 @@ app.MapControllers();
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 
 Console.WriteLine("═══════════════════════════════════════════════════════");
-Console.WriteLine("  ProfitX Cloud Trading Server v2.0");
+Console.WriteLine("  ProfitX Cloud Trading Server v3.0");
 Console.WriteLine("  Developer: London Cyber 2026");
-Console.WriteLine("  NO PC NEEDED - Pure Cloud Trading!");
+Console.WriteLine("  Multi-User Cloud Trading Platform");
+Console.WriteLine("  Each user connects with own MetaApi token");
 Console.WriteLine("  Running on port: " + port);
 Console.WriteLine("═══════════════════════════════════════════════════════");
 
 app.Run($"http://0.0.0.0:{port}");
 
-// ═══════════════════════════════════════════════════════════════
-// DATA STORE
-// ═══════════════════════════════════════════════════════════════
 public class DataStore
 {
     public ConcurrentDictionary<string, BotSession> ActiveBots { get; } = new();
     public ConcurrentDictionary<string, AccountData> AccountsData { get; } = new();
     public ConcurrentDictionary<string, List<TradeData>> OpenTrades { get; } = new();
     public ConcurrentDictionary<string, List<TradeData>> TradeHistory { get; } = new();
-    public ConcurrentDictionary<string, MT5Credentials> MT5Accounts { get; } = new();
+    public ConcurrentDictionary<string, UserMT5Connection> UserConnections { get; } = new();
 }
 
 public class BotSession
@@ -53,6 +50,11 @@ public class BotSession
     public bool IsRunning { get; set; }
     public DateTime StartTime { get; set; }
     public string Status { get; set; } = "STOPPED";
+    public double DailyStartBalance { get; set; }
+    public double DailyProfit { get; set; }
+    public int TotalTrades { get; set; }
+    public int WinningTrades { get; set; }
+    public int LosingTrades { get; set; }
 }
 
 public class AccountData
@@ -91,12 +93,24 @@ public class TradeData
     public bool IsOpen { get; set; }
 }
 
-public class MT5Credentials
+public class UserMT5Connection
 {
     public string UserId { get; set; } = "";
-    public string Login { get; set; } = "";
-    public string Password { get; set; } = "";
-    public string Server { get; set; } = "";
-    public string Platform { get; set; } = "mt5";
+    public string Mt5Login { get; set; } = "";
+    public string Mt5Password { get; set; } = "";
+    public string Mt5Server { get; set; } = "";
+    public string MetaApiToken { get; set; } = "";
+    public string MetaApiAccountId { get; set; } = "";
     public bool IsConnected { get; set; }
+    public DateTime ConnectedAt { get; set; }
+}
+
+public class CandleData
+{
+    public string Time { get; set; } = "";
+    public double Open { get; set; }
+    public double High { get; set; }
+    public double Low { get; set; }
+    public double Close { get; set; }
+    public long Volume { get; set; }
 }
