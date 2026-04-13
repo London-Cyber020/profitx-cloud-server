@@ -1,194 +1,171 @@
 using Microsoft.AspNetCore.Mvc;
-using System.Text;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace ProfitX.CloudServer.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class TestController : ControllerBase
+public class TradingController : ControllerBase
 {
-    [HttpGet("ping")]
-    public object Ping()
+    private readonly DataStore _store;
+    private readonly MetaApiService _metaApi;
+    private static readonly Dictionary<string, string> _accountIds = new();
+
+    public TradingController(DataStore store, MetaApiService metaApi)
     {
-        return new
-        {
-            success = true,
-            message = "ProfitX Cloud Trading Server is running!",
-            time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
-            version = "2.0",
-            developer = "London Cyber 2026"
-        };
+        _store = store;
+        _metaApi = metaApi;
     }
 
-    [HttpGet("status")]
-    public object Status()
+    [HttpPost("startbot")]
+    public object StartBot([FromBody] StartBotRequest request)
     {
-        return new
+        if (request == null) return new { success = false, message = "No data" };
+        string key = $"{request.UserId}_{request.Mt5Login}";
+        if (!_store.MT5Accounts.ContainsKey(key))
+            return new { success = false, message = "Connect MT5 account first" };
+
+        _store.ActiveBots[key] = new BotSession
         {
-            success = true,
-            serverName = "ProfitX Cloud Trading Server",
-            version = "2.0",
-            uptime = DateTime.Now.ToString(),
-            environment = "Render Cloud"
+            UserId = request.UserId, Mt5Login = request.Mt5Login,
+            Symbol = request.Symbol, LotSize = request.LotSize,
+            Strategy = request.Strategy, MaxTrades = request.MaxTrades,
+            IsRunning = true, StartTime = DateTime.Now, Status = "Running"
         };
+        Console.WriteLine($"BOT STARTED: {request.Symbol} {request.Strategy}");
+        return new { success = true, message = "Bot started!", symbol = request.Symbol, strategy = request.Strategy, lotSize = request.LotSize };
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // CLEANUP: Delete all MetaApi accounts and start fresh
-    // Call this once: /api/test/cleanup
-    // ═══════════════════════════════════════════════════════════════
-    [HttpGet("cleanup")]
-    public async Task<object> Cleanup()
+    [HttpPost("stopbot")]
+    public object StopBot([FromBody] StopBotRequest request)
     {
-        string apiToken = Environment.GetEnvironmentVariable("METAAPI_TOKEN") ?? "";
-
-        if (string.IsNullOrEmpty(apiToken))
+        if (request == null) return new { success = false, message = "No data" };
+        string key = $"{request.UserId}_{request.Mt5Login}";
+        if (_store.ActiveBots.ContainsKey(key))
         {
-            return new { success = false, message = "No MetaApi token set" };
+            _store.ActiveBots[key].IsRunning = false;
+            _store.ActiveBots[key].Status = "Stopped";
+        }
+        return new { success = true, message = "Bot stopped!" };
+    }
+
+    [HttpGet("botstatus")]
+    public object BotStatus(string userId = "", string mt5Login = "")
+    {
+        string key = $"{userId}_{mt5Login}";
+        if (_store.ActiveBots.ContainsKey(key))
+        {
+            var bot = _store.ActiveBots[key];
+            var rt = DateTime.Now - bot.StartTime;
+            return new { success = true, isRunning = bot.IsRunning, symbol = bot.Symbol, strategy = bot.Strategy, lotSize = bot.LotSize, maxTrades = bot.MaxTrades, status = bot.Status, runningTime = bot.IsRunning ? $"{rt.Hours:D2}:{rt.Minutes:D2}:{rt.Seconds:D2}" : "00:00:00" };
+        }
+        return new { success = true, isRunning = false, status = "Not started" };
+    }
+
+    [HttpGet("accountinfo")]
+    public async Task<object> AccountInfo(string userId = "", string mt5Login = "")
+    {
+        string key = $"{userId}_{mt5Login}";
+        Console.WriteLine($"AccountInfo: key={key}");
+
+        if (_accountIds.ContainsKey(key) && !string.IsNullOrEmpty(_accountIds[key]))
+        {
+            var fresh = await _metaApi.GetAccountInfoAsync(_accountIds[key]);
+            if (fresh != null)
+            {
+                fresh.OpenTrades = (await _metaApi.GetOpenPositionsAsync(_accountIds[key])).Count;
+                _store.AccountsData[key] = fresh;
+            }
         }
 
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Add("auth-token", apiToken);
-        httpClient.Timeout = TimeSpan.FromSeconds(30);
+        if (_store.AccountsData.ContainsKey(key))
+        {
+            var d = _store.AccountsData[key];
+            return new { success = true, account = new { accountNumber = d.AccountNumber, accountName = d.AccountName, server = d.Server, currency = d.Currency, leverage = d.Leverage, balance = d.Balance, equity = d.Equity, margin = d.Margin, freeMargin = d.FreeMargin, marginLevel = d.MarginLevel, currentDrawdown = d.Drawdown, profitToday = d.ProfitToday, profitThisWeek = 0.0, profitThisMonth = 0.0, totalTrades = 0, winningTrades = 0, losingTrades = 0, openTrades = d.OpenTrades, isConnected = d.IsConnected, lastUpdate = d.LastUpdate } };
+        }
 
-        string apiUrl = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
+        if (_store.MT5Accounts.ContainsKey(key))
+        {
+            var c = _store.MT5Accounts[key];
+            return new { success = true, account = new { accountNumber = c.Login, accountName = "", server = c.Server, currency = "USD", leverage = 0, balance = 0.0, equity = 0.0, margin = 0.0, freeMargin = 0.0, marginLevel = 0.0, currentDrawdown = 0.0, profitToday = 0.0, profitThisWeek = 0.0, profitThisMonth = 0.0, totalTrades = 0, winningTrades = 0, losingTrades = 0, openTrades = 0, isConnected = c.IsConnected, lastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") } };
+        }
+
+        return new { success = false, message = "MT5 not connected", account = new { accountNumber = "", accountName = "", server = "", currency = "USD", leverage = 0, balance = 0.0, equity = 0.0, margin = 0.0, freeMargin = 0.0, marginLevel = 0.0, currentDrawdown = 0.0, profitToday = 0.0, profitThisWeek = 0.0, profitThisMonth = 0.0, totalTrades = 0, winningTrades = 0, losingTrades = 0, openTrades = 0, isConnected = false, lastUpdate = "" } };
+    }
+
+    [HttpGet("opentrades")]
+    public async Task<object> OpenTrades(string userId = "", string mt5Login = "")
+    {
+        string key = $"{userId}_{mt5Login}";
+        if (_accountIds.ContainsKey(key) && !string.IsNullOrEmpty(_accountIds[key]))
+        {
+            var trades = await _metaApi.GetOpenPositionsAsync(_accountIds[key]);
+            if (trades.Count > 0) _store.OpenTrades[key] = trades;
+        }
+        if (_store.OpenTrades.ContainsKey(key))
+        {
+            var t = _store.OpenTrades[key];
+            return new { success = true, trades = t.Select(x => new { ticket = x.Ticket, type = x.Type == "BUY" ? 0 : 1, typeString = x.Type, symbol = x.Symbol, lotSize = x.LotSize, entryPrice = x.EntryPrice, currentPrice = x.CurrentPrice, stopLoss = x.StopLoss, takeProfit = x.TakeProfit, profit = x.Profit, swap = x.Swap, commission = 0, openTime = x.OpenTime, isOpen = x.IsOpen }), count = t.Count };
+        }
+        return new { success = true, trades = new List<object>(), count = 0 };
+    }
+
+    [HttpGet("history")]
+    public object History(string userId = "", string mt5Login = "", int days = 30)
+    {
+        string key = $"{userId}_{mt5Login}";
+        if (_store.TradeHistory.ContainsKey(key))
+            return new { success = true, trades = _store.TradeHistory[key], count = _store.TradeHistory[key].Count };
+        return new { success = true, trades = new List<object>(), count = 0 };
+    }
+
+    [HttpPost("connectmt5")]
+    public async Task<object> ConnectMT5([FromBody] MT5ConnectRequest request)
+    {
+        if (request == null) return new { success = false, message = "No data" };
+        if (string.IsNullOrEmpty(request.Login) || string.IsNullOrEmpty(request.Password) || string.IsNullOrEmpty(request.Server))
+            return new { success = false, message = "All fields required" };
+
+        string key = $"{request.UserId}_{request.Login}";
+        Console.WriteLine($"MT5 CONNECT: Login:{request.Login} Server:{request.Server}");
 
         try
         {
-            // Step 1: Get all accounts
-            Console.WriteLine("CLEANUP: Fetching all accounts...");
-            var response = await httpClient.GetAsync($"{apiUrl}/users/current/accounts");
-            string body = await response.Content.ReadAsStringAsync();
+            string? accountId = await _metaApi.GetOrCreateAccountAsync(request.Login, request.Password, request.Server);
+            if (string.IsNullOrEmpty(accountId))
+                return new { success = false, message = "Failed to connect. Check credentials." };
 
-            Console.WriteLine($"Response: {response.StatusCode}");
-            Console.WriteLine($"Body: {body}");
+            _accountIds[key] = accountId;
+            _store.MT5Accounts[key] = new MT5Credentials { UserId = request.UserId, Login = request.Login, Password = request.Password, Server = request.Server, Platform = "mt5", IsConnected = true };
 
-            if (!response.IsSuccessStatusCode)
+            AccountData? info = null;
+            for (int i = 1; i <= 3; i++)
             {
-                return new { success = false, message = $"Failed to get accounts: {response.StatusCode}", details = body };
+                Console.WriteLine($"Fetching info attempt {i}/3...");
+                await Task.Delay(5000 * i);
+                info = await _metaApi.GetAccountInfoAsync(accountId);
+                if (info != null && info.Balance > 0) { _store.AccountsData[key] = info; break; }
             }
 
-            var accounts = JArray.Parse(body);
-            Console.WriteLine($"Found {accounts.Count} accounts");
+            double bal = info?.Balance ?? 0;
+            double eq = info?.Equity ?? 0;
+            Console.WriteLine($"MT5 CONNECTED! Balance:${bal}");
 
-            var results = new List<object>();
-
-            foreach (var acc in accounts)
-            {
-                string accId = acc["_id"]?.ToString() ?? acc["id"]?.ToString() ?? "";
-                string accLogin = acc["login"]?.ToString() ?? "";
-                string accState = acc["state"]?.ToString() ?? "";
-
-                Console.WriteLine($"Processing: {accLogin} -> {accId} ({accState})");
-
-                if (string.IsNullOrEmpty(accId))
-                {
-                    results.Add(new { login = accLogin, status = "skipped - no ID" });
-                    continue;
-                }
-
-                try
-                {
-                    // Undeploy first
-                    if (accState == "DEPLOYED" || accState == "DEPLOYING")
-                    {
-                        Console.WriteLine($"  Undeploying: {accId}");
-                        var undeployResponse = await httpClient.PostAsync(
-                            $"{apiUrl}/users/current/accounts/{accId}/undeploy",
-                            new StringContent("", Encoding.UTF8, "application/json"));
-                        Console.WriteLine($"  Undeploy: {undeployResponse.StatusCode}");
-                        await Task.Delay(3000);
-                    }
-
-                    // Delete
-                    Console.WriteLine($"  Deleting: {accId}");
-                    var deleteResponse = await httpClient.DeleteAsync(
-                        $"{apiUrl}/users/current/accounts/{accId}");
-                    string deleteBody = await deleteResponse.Content.ReadAsStringAsync();
-                    Console.WriteLine($"  Delete: {deleteResponse.StatusCode} - {deleteBody}");
-
-                    results.Add(new
-                    {
-                        login = accLogin,
-                        id = accId,
-                        status = deleteResponse.IsSuccessStatusCode ? "DELETED" : "FAILED",
-                        details = deleteBody
-                    });
-
-                    await Task.Delay(2000);
-                }
-                catch (Exception ex)
-                {
-                    results.Add(new { login = accLogin, id = accId, status = "ERROR", details = ex.Message });
-                }
-            }
-
-            return new
-            {
-                success = true,
-                message = $"Cleanup complete. Processed {accounts.Count} accounts.",
-                results = results
-            };
+            return new { success = true, message = bal > 0 ? $"MT5 connected!\n\nBalance: ${bal:N2}\nEquity: ${eq:N2}" : "MT5 connected! Pull down to refresh.", login = request.Login, server = request.Server, balance = bal, equity = eq };
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"CLEANUP ERROR: {ex.Message}");
-            return new { success = false, message = ex.Message };
+            Console.WriteLine($"Connect error: {ex.Message}");
+            return new { success = false, message = "Error: " + ex.Message };
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // LIST: Show all MetaApi accounts
-    // Call: /api/test/accounts
-    // ═══════════════════════════════════════════════════════════════
-    [HttpGet("accounts")]
-    public async Task<object> Accounts()
-    {
-        string apiToken = Environment.GetEnvironmentVariable("METAAPI_TOKEN") ?? "";
+    [HttpGet("symbols")]
+    public object Symbols() => new { success = true, symbols = new[] { "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "US30", "US100", "US500", "USOIL" } };
 
-        if (string.IsNullOrEmpty(apiToken))
-        {
-            return new { success = false, message = "No MetaApi token set" };
-        }
-
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Add("auth-token", apiToken);
-
-        string apiUrl = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
-
-        try
-        {
-            var response = await httpClient.GetAsync($"{apiUrl}/users/current/accounts");
-            string body = await response.Content.ReadAsStringAsync();
-
-            if (response.IsSuccessStatusCode)
-            {
-                var accounts = JArray.Parse(body);
-                var accountList = new List<object>();
-
-                foreach (var acc in accounts)
-                {
-                    accountList.Add(new
-                    {
-                        id = acc["_id"]?.ToString() ?? acc["id"]?.ToString() ?? "",
-                        login = acc["login"]?.ToString() ?? "",
-                        server = acc["server"]?.ToString() ?? "",
-                        state = acc["state"]?.ToString() ?? "",
-                        connection = acc["connectionStatus"]?.ToString() ?? "",
-                        name = acc["name"]?.ToString() ?? ""
-                    });
-                }
-
-                return new { success = true, count = accountList.Count, accounts = accountList };
-            }
-
-            return new { success = false, message = body };
-        }
-        catch (Exception ex)
-        {
-            return new { success = false, message = ex.Message };
-        }
-    }
+    [HttpGet("strategies")]
+    public object Strategies() => new { success = true, strategies = new object[] { new { name = "ICT", fullName = "Inner Circle Trader" }, new { name = "SMC", fullName = "Smart Money Concepts" } } };
 }
+
+public class StartBotRequest { public string UserId { get; set; } = ""; public string Mt5Login { get; set; } = ""; public string Symbol { get; set; } = ""; public double LotSize { get; set; } public string Strategy { get; set; } = ""; public int MaxTrades { get; set; } }
+public class StopBotRequest { public string UserId { get; set; } = ""; public string Mt5Login { get; set; } = ""; }
+public class MT5ConnectRequest { public string UserId { get; set; } = ""; public string Login { get; set; } = ""; public string Password { get; set; } = ""; public string Server { get; set; } = ""; }
