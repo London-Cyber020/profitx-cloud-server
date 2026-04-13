@@ -8,30 +8,26 @@ public class TradingController : ControllerBase
 {
     private readonly DataStore _store;
     private readonly MetaApiService _metaApi;
-    private readonly TradingEngine _engine;
 
-    public TradingController(DataStore store, MetaApiService metaApi, IHostedService engine)
+    public TradingController(DataStore store, MetaApiService metaApi)
     {
         _store = store;
         _metaApi = metaApi;
-        _engine = (TradingEngine)engine;
     }
 
     [HttpPost("startbot")]
-    public async Task<object> StartBot([FromBody] StartBotRequest request)
+    public object StartBot([FromBody] StartBotRequest request)
     {
         if (request == null)
             return new { success = false, message = "No data received" };
 
         string key = $"{request.UserId}_{request.Mt5Login}";
 
-        // Check if MT5 account is connected
         if (!_store.MT5Accounts.ContainsKey(key))
         {
-            return new { success = false, message = "MT5 account not connected. Go to Settings and connect your MT5 account first." };
+            return new { success = false, message = "MT5 account not connected. Connect your MT5 account first." };
         }
 
-        // Create bot session
         _store.ActiveBots[key] = new BotSession
         {
             UserId = request.UserId,
@@ -42,7 +38,7 @@ public class TradingController : ControllerBase
             MaxTrades = request.MaxTrades,
             IsRunning = true,
             StartTime = DateTime.Now,
-            Status = "Starting..."
+            Status = "Running"
         };
 
         Console.WriteLine($"═══════════════════════════════════════════");
@@ -114,7 +110,6 @@ public class TradingController : ControllerBase
     {
         string key = $"{userId}_{mt5Login}";
 
-        // Check if we have account data
         if (_store.AccountsData.ContainsKey(key))
         {
             var data = _store.AccountsData[key];
@@ -135,8 +130,8 @@ public class TradingController : ControllerBase
                     marginLevel = data.MarginLevel,
                     currentDrawdown = data.Drawdown,
                     profitToday = data.ProfitToday,
-                    profitThisWeek = 0,
-                    profitThisMonth = 0,
+                    profitThisWeek = 0.0,
+                    profitThisMonth = 0.0,
                     totalTrades = 0,
                     winningTrades = 0,
                     losingTrades = 0,
@@ -147,7 +142,6 @@ public class TradingController : ControllerBase
             };
         }
 
-        // Check if MT5 account is connected but no data yet
         if (_store.MT5Accounts.ContainsKey(key))
         {
             var cred = _store.MT5Accounts[key];
@@ -187,6 +181,7 @@ public class TradingController : ControllerBase
             account = new
             {
                 accountNumber = "", accountName = "", server = "",
+                currency = "USD", leverage = 0,
                 balance = 0.0, equity = 0.0, margin = 0.0, freeMargin = 0.0,
                 marginLevel = 0.0, currentDrawdown = 0.0, profitToday = 0.0,
                 profitThisWeek = 0.0, profitThisMonth = 0.0,
@@ -262,22 +257,35 @@ public class TradingController : ControllerBase
 
         Console.WriteLine($"═══════════════════════════════════════════");
         Console.WriteLine($"MT5 CONNECT REQUEST");
+        Console.WriteLine($"  User: {request.UserId}");
         Console.WriteLine($"  Login: {request.Login}");
         Console.WriteLine($"  Server: {request.Server}");
         Console.WriteLine($"═══════════════════════════════════════════");
 
         try
         {
-            // Create MetaApi account
+            // Step 1: Create MetaApi account
+            Console.WriteLine("Creating MetaApi account...");
             string? accountId = await _metaApi.CreateAccountAsync(
                 request.Login, request.Password, request.Server);
 
             if (accountId == null)
             {
-                return new { success = false, message = "Failed to connect to MT5. Check your credentials." };
+                Console.WriteLine("MetaApi account creation failed!");
+                return new
+                {
+                    success = false,
+                    message = "Failed to connect to MT5. Please check:\n\n" +
+                              "1. Login number is correct\n" +
+                              "2. Password is correct\n" +
+                              "3. Server name is correct\n" +
+                              "4. Account is active on Exness"
+                };
             }
 
-            // Store credentials
+            Console.WriteLine($"MetaApi account created: {accountId}");
+
+            // Step 2: Store credentials
             _store.MT5Accounts[key] = new MT5Credentials
             {
                 UserId = request.UserId,
@@ -288,34 +296,73 @@ public class TradingController : ControllerBase
                 IsConnected = true
             };
 
-            // Register account in trading engine
-            _engine.RegisterAccount(key, accountId);
+            Console.WriteLine("Credentials stored. Waiting for connection...");
 
-            // Fetch initial account info
-            await Task.Delay(3000); // Wait for connection
+            // Step 3: Wait for MetaApi to connect
+            await Task.Delay(5000);
+
+            // Step 4: Fetch account info
+            Console.WriteLine("Fetching account info...");
             var accountInfo = await _metaApi.GetAccountInfoAsync(accountId);
+
+            double balance = 0;
+            double equity = 0;
+            string currency = "USD";
+            int leverage = 0;
+
             if (accountInfo != null)
             {
                 _store.AccountsData[key] = accountInfo;
+                balance = accountInfo.Balance;
+                equity = accountInfo.Equity;
+                currency = accountInfo.Currency;
+                leverage = accountInfo.Leverage;
+
+                Console.WriteLine($"Account info received!");
+                Console.WriteLine($"  Balance: ${balance}");
+                Console.WriteLine($"  Equity: ${equity}");
+                Console.WriteLine($"  Currency: {currency}");
+                Console.WriteLine($"  Leverage: 1:{leverage}");
+            }
+            else
+            {
+                Console.WriteLine("Account info not available yet (will retry later)");
             }
 
-            Console.WriteLine($"MT5 Connected successfully! Account ID: {accountId}");
+            // Step 5: Register in trading engine
+            // Trading engine will pick up from ActiveBots when bot starts
+
+            Console.WriteLine($"═══════════════════════════════════════════");
+            Console.WriteLine($"MT5 CONNECTED SUCCESSFULLY!");
+            Console.WriteLine($"  Account ID: {accountId}");
+            Console.WriteLine($"  Login: {request.Login}");
+            Console.WriteLine($"  Server: {request.Server}");
+            Console.WriteLine($"  Balance: ${balance}");
+            Console.WriteLine($"═══════════════════════════════════════════");
 
             return new
             {
                 success = true,
-                message = "MT5 account connected successfully!",
+                message = $"MT5 account connected!\n\nBalance: ${balance:N2}\nEquity: ${equity:N2}\nLeverage: 1:{leverage}",
                 login = request.Login,
                 server = request.Server,
                 accountId = accountId,
-                balance = accountInfo?.Balance ?? 0,
-                equity = accountInfo?.Equity ?? 0
+                balance = balance,
+                equity = equity,
+                currency = currency,
+                leverage = leverage
             };
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"MT5 Connect error: {ex.Message}");
-            return new { success = false, message = "Connection error: " + ex.Message };
+            Console.WriteLine($"MT5 Connect ERROR: {ex.Message}");
+            Console.WriteLine($"Stack: {ex.StackTrace}");
+
+            return new
+            {
+                success = false,
+                message = "Connection error. Please try again.\n\nDetails: " + ex.Message
+            };
         }
     }
 
