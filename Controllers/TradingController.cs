@@ -63,7 +63,7 @@ public class TradingController : ControllerBase
             _store.ActiveBots[key].IsRunning = false;
         }
 
-        Console.WriteLine("BOT STOPPED for user: " + request.UserId);
+        Console.WriteLine("BOT STOPPED for: " + request.UserId);
         return new { success = true, message = "Trading bot stopped!" };
     }
 
@@ -97,17 +97,20 @@ public class TradingController : ControllerBase
     {
         string key = $"{userId}_{mt5Login}";
 
-        if (_store.PcData.ContainsKey(key) && _store.PcData[key].ContainsKey("accountInfo"))
+        if (_store.PcData.ContainsKey(key) && 
+            _store.PcData[key].ContainsKey("accountInfo"))
         {
             var content = _store.PcData[key]["accountInfo"];
             var data = new Dictionary<string, string>();
 
-            foreach (var line in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            foreach (var line in content.Split('\n', 
+                StringSplitOptions.RemoveEmptyEntries))
             {
                 if (line.Contains('='))
                 {
                     var parts = line.Split('=', 2);
-                    data[parts[0].Trim()] = parts[1].Trim();
+                    if (parts.Length == 2)
+                        data[parts[0].Trim()] = parts[1].Trim();
                 }
             }
 
@@ -143,7 +146,7 @@ public class TradingController : ControllerBase
         return new
         {
             success = false,
-            message = "PC not connected",
+            message = "PC not connected or Bridge not running",
             account = new
             {
                 balance = 0, equity = 0, margin = 0, freeMargin = 0,
@@ -160,12 +163,14 @@ public class TradingController : ControllerBase
     {
         string key = $"{userId}_{mt5Login}";
 
-        if (_store.PcData.ContainsKey(key) && _store.PcData[key].ContainsKey("openTrades"))
+        if (_store.PcData.ContainsKey(key) && 
+            _store.PcData[key].ContainsKey("openTrades"))
         {
             var content = _store.PcData[key]["openTrades"];
             var trades = new List<object>();
 
-            foreach (var line in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            foreach (var line in content.Split('\n', 
+                StringSplitOptions.RemoveEmptyEntries))
             {
                 var parts = line.Split('|');
                 if (parts.Length >= 11)
@@ -197,9 +202,45 @@ public class TradingController : ControllerBase
     }
 
     [HttpGet("history")]
-    public object History(string userId = "", int days = 30)
+    public object History(string userId = "", string mt5Login = "", int days = 30)
     {
-        return new { success = true, trades = new List<object>(), count = 0 };
+        string key = $"{userId}_{mt5Login}";
+        var trades = new List<object>();
+
+        if (_store.PcData.ContainsKey(key) && 
+            _store.PcData[key].ContainsKey("history"))
+        {
+            var content = _store.PcData[key]["history"];
+
+            foreach (var line in content.Split('\n', 
+                StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = line.Split('|');
+                if (parts.Length >= 11)
+                {
+                    trades.Add(new
+                    {
+                        ticket = long.TryParse(parts[0], out long tk) ? tk : 0,
+                        type = parts[1] == "BUY" ? 0 : 1,
+                        typeString = parts[1],
+                        symbol = parts[2],
+                        lotSize = double.TryParse(parts[3], out double ls) ? ls : 0,
+                        entryPrice = double.TryParse(parts[4], out double ep) ? ep : 0,
+                        currentPrice = double.TryParse(parts[5], out double cp) ? cp : 0,
+                        stopLoss = double.TryParse(parts[6], out double slv) ? slv : 0,
+                        takeProfit = double.TryParse(parts[7], out double tpv) ? tpv : 0,
+                        profit = double.TryParse(parts[8], out double pr) ? pr : 0,
+                        swap = 0,
+                        commission = 0,
+                        openTime = parts.Length > 9 ? parts[9] : "",
+                        closeTime = parts.Length > 10 ? parts[10] : "",
+                        isOpen = false
+                    });
+                }
+            }
+        }
+
+        return new { success = true, trades = trades, count = trades.Count };
     }
 
     [HttpPost("connectmt5")]
@@ -208,8 +249,24 @@ public class TradingController : ControllerBase
         if (request == null)
             return new { success = false, message = "No data received" };
 
-        Console.WriteLine($"MT5 Connected: Login:{request.Login} Server:{request.Server}");
-        return new { success = true, message = "MT5 account connected successfully!" };
+        // Store MT5 credentials for Bridge to pick up
+        string key = $"{request.UserId}_{request.Login}";
+
+        if (!_store.PcData.ContainsKey(key))
+            _store.PcData[key] = new Dictionary<string, string>();
+
+        _store.PcData[key]["mt5Credentials"] = 
+            $"login={request.Login}\npassword={request.Password}\nserver={request.Server}\ntimestamp={DateTime.Now:yyyy-MM-dd HH:mm:ss}";
+
+        Console.WriteLine($"MT5 Credentials stored: Login:{request.Login} Server:{request.Server}");
+
+        return new
+        {
+            success = true,
+            message = "MT5 account connected successfully!",
+            login = request.Login,
+            server = request.Server
+        };
     }
 
     [HttpGet("symbols")]
@@ -220,12 +277,10 @@ public class TradingController : ControllerBase
             success = true,
             symbols = new[]
             {
-                "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD",
-                "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "EURCAD",
-                "XAUUSD", "XAGUSD",
-                "BTCUSD", "ETHUSD",
-                "US30", "US100", "US500",
-                "USOIL", "UKOIL"
+                "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD",
+                "USDCAD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY",
+                "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD",
+                "US30", "US100", "US500", "USOIL", "UKOIL"
             }
         };
     }
@@ -238,8 +293,8 @@ public class TradingController : ControllerBase
             success = true,
             strategies = new object[]
             {
-                new { name = "ICT", fullName = "Inner Circle Trader", description = "Order Blocks + FVG" },
-                new { name = "SMC", fullName = "Smart Money Concepts", description = "BOS + Market Structure" }
+                new { name = "ICT", fullName = "Inner Circle Trader" },
+                new { name = "SMC", fullName = "Smart Money Concepts" }
             }
         };
     }
