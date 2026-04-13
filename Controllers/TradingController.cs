@@ -9,6 +9,9 @@ public class TradingController : ControllerBase
     private readonly DataStore _store;
     private readonly MetaApiService _metaApi;
 
+    // Store MetaApi account IDs
+    private static readonly Dictionary<string, string> _accountIds = new();
+
     public TradingController(DataStore store, MetaApiService metaApi)
     {
         _store = store;
@@ -41,14 +44,7 @@ public class TradingController : ControllerBase
             Status = "Running"
         };
 
-        Console.WriteLine($"═══════════════════════════════════════════");
-        Console.WriteLine($"BOT STARTED!");
-        Console.WriteLine($"  User: {request.UserId}");
-        Console.WriteLine($"  MT5: {request.Mt5Login}");
-        Console.WriteLine($"  Symbol: {request.Symbol}");
-        Console.WriteLine($"  Strategy: {request.Strategy}");
-        Console.WriteLine($"  Lot: {request.LotSize}");
-        Console.WriteLine($"═══════════════════════════════════════════");
+        Console.WriteLine($"BOT STARTED: {request.Symbol} {request.Strategy}");
 
         return new
         {
@@ -106,10 +102,29 @@ public class TradingController : ControllerBase
     }
 
     [HttpGet("accountinfo")]
-    public object AccountInfo(string userId = "", string mt5Login = "")
+    public async Task<object> AccountInfo(string userId = "", string mt5Login = "")
     {
         string key = $"{userId}_{mt5Login}";
 
+        Console.WriteLine($"AccountInfo request: key={key}");
+
+        // Try to get fresh data from MetaApi
+        if (_accountIds.ContainsKey(key))
+        {
+            string accountId = _accountIds[key];
+            Console.WriteLine($"Fetching fresh data from MetaApi: {accountId}");
+
+            var freshData = await _metaApi.GetAccountInfoAsync(accountId);
+            if (freshData != null)
+            {
+                freshData.OpenTrades = (await _metaApi.GetOpenPositionsAsync(accountId)).Count;
+                _store.AccountsData[key] = freshData;
+
+                Console.WriteLine($"Fresh data: Balance=${freshData.Balance} Equity=${freshData.Equity}");
+            }
+        }
+
+        // Return cached data
         if (_store.AccountsData.ContainsKey(key))
         {
             var data = _store.AccountsData[key];
@@ -142,6 +157,7 @@ public class TradingController : ControllerBase
             };
         }
 
+        // Return MT5 credentials if connected but no data yet
         if (_store.MT5Accounts.ContainsKey(key))
         {
             var cred = _store.MT5Accounts[key];
@@ -192,9 +208,20 @@ public class TradingController : ControllerBase
     }
 
     [HttpGet("opentrades")]
-    public object OpenTrades(string userId = "", string mt5Login = "")
+    public async Task<object> OpenTrades(string userId = "", string mt5Login = "")
     {
         string key = $"{userId}_{mt5Login}";
+
+        // Try to get fresh trades from MetaApi
+        if (_accountIds.ContainsKey(key))
+        {
+            string accountId = _accountIds[key];
+            var freshTrades = await _metaApi.GetOpenPositionsAsync(accountId);
+            if (freshTrades.Count > 0)
+            {
+                _store.OpenTrades[key] = freshTrades;
+            }
+        }
 
         if (_store.OpenTrades.ContainsKey(key))
         {
@@ -257,35 +284,29 @@ public class TradingController : ControllerBase
 
         Console.WriteLine($"═══════════════════════════════════════════");
         Console.WriteLine($"MT5 CONNECT REQUEST");
-        Console.WriteLine($"  User: {request.UserId}");
         Console.WriteLine($"  Login: {request.Login}");
         Console.WriteLine($"  Server: {request.Server}");
         Console.WriteLine($"═══════════════════════════════════════════");
 
         try
         {
-            // Step 1: Create MetaApi account
-            Console.WriteLine("Creating MetaApi account...");
+            // Get or create MetaApi account
             string? accountId = await _metaApi.GetOrCreateAccountAsync(
                 request.Login, request.Password, request.Server);
 
             if (accountId == null)
             {
-                Console.WriteLine("MetaApi account creation failed!");
                 return new
                 {
                     success = false,
-                    message = "Failed to connect to MT5. Please check:\n\n" +
-                              "1. Login number is correct\n" +
-                              "2. Password is correct\n" +
-                              "3. Server name is correct\n" +
-                              "4. Account is active on Exness"
+                    message = "Failed to connect to MT5. Please check your credentials."
                 };
             }
 
-            Console.WriteLine($"MetaApi account created: {accountId}");
+            // Store account ID for later use
+            _accountIds[key] = accountId;
 
-            // Step 2: Store credentials
+            // Store credentials
             _store.MT5Accounts[key] = new MT5Credentials
             {
                 UserId = request.UserId,
@@ -296,54 +317,55 @@ public class TradingController : ControllerBase
                 IsConnected = true
             };
 
-            Console.WriteLine("Credentials stored. Waiting for connection...");
+            Console.WriteLine($"Account ID stored: {accountId}");
+            Console.WriteLine("Waiting for MetaApi to connect...");
 
-            // Step 3: Wait for MetaApi to connect
-            await Task.Delay(5000);
-
-            // Step 4: Fetch account info
-            Console.WriteLine("Fetching account info...");
-            var accountInfo = await _metaApi.GetAccountInfoAsync(accountId);
-
+            // Wait for connection then fetch account info
+            // Try multiple times with increasing delay
+            AccountData? accountInfo = null;
             double balance = 0;
             double equity = 0;
             string currency = "USD";
             int leverage = 0;
 
-            if (accountInfo != null)
+            for (int attempt = 1; attempt <= 3; attempt++)
             {
-                _store.AccountsData[key] = accountInfo;
-                balance = accountInfo.Balance;
-                equity = accountInfo.Equity;
-                currency = accountInfo.Currency;
-                leverage = accountInfo.Leverage;
+                Console.WriteLine($"Fetching account info (attempt {attempt}/3)...");
+                await Task.Delay(5000 * attempt);
 
-                Console.WriteLine($"Account info received!");
-                Console.WriteLine($"  Balance: ${balance}");
-                Console.WriteLine($"  Equity: ${equity}");
-                Console.WriteLine($"  Currency: {currency}");
-                Console.WriteLine($"  Leverage: 1:{leverage}");
-            }
-            else
-            {
-                Console.WriteLine("Account info not available yet (will retry later)");
-            }
+                accountInfo = await _metaApi.GetAccountInfoAsync(accountId);
+                if (accountInfo != null && accountInfo.Balance > 0)
+                {
+                    balance = accountInfo.Balance;
+                    equity = accountInfo.Equity;
+                    currency = accountInfo.Currency;
+                    leverage = accountInfo.Leverage;
 
-            // Step 5: Register in trading engine
-            // Trading engine will pick up from ActiveBots when bot starts
+                    _store.AccountsData[key] = accountInfo;
+
+                    Console.WriteLine($"Account info received!");
+                    Console.WriteLine($"  Balance: ${balance}");
+                    Console.WriteLine($"  Equity: ${equity}");
+                    break;
+                }
+                else
+                {
+                    Console.WriteLine($"  Not ready yet...");
+                }
+            }
 
             Console.WriteLine($"═══════════════════════════════════════════");
-            Console.WriteLine($"MT5 CONNECTED SUCCESSFULLY!");
+            Console.WriteLine($"MT5 CONNECTED!");
             Console.WriteLine($"  Account ID: {accountId}");
-            Console.WriteLine($"  Login: {request.Login}");
-            Console.WriteLine($"  Server: {request.Server}");
             Console.WriteLine($"  Balance: ${balance}");
             Console.WriteLine($"═══════════════════════════════════════════");
 
             return new
             {
                 success = true,
-                message = $"MT5 account connected!\n\nBalance: ${balance:N2}\nEquity: ${equity:N2}\nLeverage: 1:{leverage}",
+                message = balance > 0
+                    ? $"MT5 connected!\n\nBalance: ${balance:N2}\nEquity: ${equity:N2}\nLeverage: 1:{leverage}"
+                    : "MT5 connected! Account data loading...\n\nPull down to refresh dashboard.",
                 login = request.Login,
                 server = request.Server,
                 accountId = accountId,
@@ -356,12 +378,10 @@ public class TradingController : ControllerBase
         catch (Exception ex)
         {
             Console.WriteLine($"MT5 Connect ERROR: {ex.Message}");
-            Console.WriteLine($"Stack: {ex.StackTrace}");
-
             return new
             {
                 success = false,
-                message = "Connection error. Please try again.\n\nDetails: " + ex.Message
+                message = "Connection error: " + ex.Message
             };
         }
     }
