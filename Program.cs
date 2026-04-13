@@ -13,7 +13,6 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddSingleton<DataStore>();
 builder.Services.AddSingleton<MetaApiService>();
-builder.Services.AddHostedService<TradingEngine>();
 
 var app = builder.Build();
 
