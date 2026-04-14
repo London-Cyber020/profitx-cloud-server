@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Text.Json;
 
 namespace ProfitX.CloudServer.Controllers;
 
@@ -14,17 +15,17 @@ public class WorkerController : ControllerBase
     }
 
     [HttpPost("connect")]
-    public object Connect([FromBody] dynamic request)
+    public object Connect([FromBody] JsonElement body)
     {
         try
         {
-            string userId = request?.userId?.ToString() ?? "";
-            string mt5Login = request?.mt5Login?.ToString() ?? "";
-            string server = request?.server?.ToString() ?? "";
+            string userId = body.TryGetProperty("userId", out var u) ? u.GetString() ?? "" : "";
+            string mt5Login = body.TryGetProperty("mt5Login", out var m) ? m.GetString() ?? "" : "";
+            string server = body.TryGetProperty("server", out var s) ? s.GetString() ?? "" : "";
 
             string key = $"{userId}_{mt5Login}";
 
-            Console.WriteLine($"Worker connect: {key}");
+            Console.WriteLine($"Worker CONNECT: key={key}");
 
             _store.UserConnections[key] = new UserMT5Connection
             {
@@ -35,39 +36,18 @@ public class WorkerController : ControllerBase
                 ConnectedAt = DateTime.Now
             };
 
-            // Also store account data if provided
-            if (request?.account != null)
+            // Parse account data
+            if (body.TryGetProperty("account", out var acc))
             {
-                try
+                var data = ParseAccountData(acc);
+                if (data != null && data.Balance > 0)
                 {
-                    var acc = request.account;
-                    _store.AccountsData[key] = new AccountData
-                    {
-                        AccountNumber = acc.accountNumber?.ToString() ?? "",
-                        AccountName = acc.accountName?.ToString() ?? "",
-                        Server = acc.server?.ToString() ?? "",
-                        Currency = acc.currency?.ToString() ?? "USD",
-                        Leverage = (int)(acc.leverage ?? 0),
-                        Balance = (double)(acc.balance ?? 0),
-                        Equity = (double)(acc.equity ?? 0),
-                        Margin = (double)(acc.margin ?? 0),
-                        FreeMargin = (double)(acc.freeMargin ?? 0),
-                        MarginLevel = (double)(acc.marginLevel ?? 0),
-                        Drawdown = (double)(acc.currentDrawdown ?? 0),
-                        ProfitToday = (double)(acc.profitToday ?? 0),
-                        OpenTrades = (int)(acc.openTrades ?? 0),
-                        IsConnected = true,
-                        LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-                    };
-
-                    Console.WriteLine($"Account data stored: Balance=${_store.AccountsData[key].Balance}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Account parse error: {ex.Message}");
+                    _store.AccountsData[key] = data;
+                    Console.WriteLine($"Account stored: Balance=${data.Balance} Equity=${data.Equity}");
                 }
             }
 
+            Console.WriteLine($"Worker registered: {key}");
             return new { success = true, message = "Registered" };
         }
         catch (Exception ex)
@@ -78,39 +58,22 @@ public class WorkerController : ControllerBase
     }
 
     [HttpPost("accountinfo")]
-    public object AccountInfo([FromBody] dynamic request)
+    public object AccountInfo([FromBody] JsonElement body)
     {
         try
         {
-            string userId = request?.userId?.ToString() ?? "";
-            string mt5Login = request?.mt5Login?.ToString() ?? "";
+            string userId = body.TryGetProperty("userId", out var u) ? u.GetString() ?? "" : "";
+            string mt5Login = body.TryGetProperty("mt5Login", out var m) ? m.GetString() ?? "" : "";
             string key = $"{userId}_{mt5Login}";
 
-            Console.WriteLine($"Worker accountinfo: {key}");
-
-            if (request?.data != null)
+            if (body.TryGetProperty("data", out var dataElement))
             {
-                var d = request.data;
-                _store.AccountsData[key] = new AccountData
+                var data = ParseAccountData(dataElement);
+                if (data != null)
                 {
-                    AccountNumber = d.accountNumber?.ToString() ?? "",
-                    AccountName = d.accountName?.ToString() ?? "",
-                    Server = d.server?.ToString() ?? "",
-                    Currency = d.currency?.ToString() ?? "USD",
-                    Leverage = (int)(d.leverage ?? 0),
-                    Balance = (double)(d.balance ?? 0),
-                    Equity = (double)(d.equity ?? 0),
-                    Margin = (double)(d.margin ?? 0),
-                    FreeMargin = (double)(d.freeMargin ?? 0),
-                    MarginLevel = (double)(d.marginLevel ?? 0),
-                    Drawdown = (double)(d.currentDrawdown ?? 0),
-                    ProfitToday = (double)(d.profitToday ?? 0),
-                    OpenTrades = (int)(d.openTrades ?? 0),
-                    IsConnected = true,
-                    LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-                };
-
-                Console.WriteLine($"Account updated: Balance=${_store.AccountsData[key].Balance}");
+                    _store.AccountsData[key] = data;
+                    Console.WriteLine($"Account updated: key={key} Balance=${data.Balance}");
+                }
             }
 
             return new { success = true };
@@ -123,42 +86,43 @@ public class WorkerController : ControllerBase
     }
 
     [HttpPost("opentrades")]
-    public object OpenTrades([FromBody] dynamic request)
+    public object OpenTrades([FromBody] JsonElement body)
     {
         try
         {
-            string userId = request?.userId?.ToString() ?? "";
-            string mt5Login = request?.mt5Login?.ToString() ?? "";
+            string userId = body.TryGetProperty("userId", out var u) ? u.GetString() ?? "" : "";
+            string mt5Login = body.TryGetProperty("mt5Login", out var m) ? m.GetString() ?? "" : "";
             string key = $"{userId}_{mt5Login}";
 
-            if (request?.trades != null)
+            if (body.TryGetProperty("trades", out var tradesElement))
             {
-                var tradeList = new List<TradeData>();
+                var trades = new List<TradeData>();
 
-                foreach (var t in request.trades)
+                foreach (var t in tradesElement.EnumerateArray())
                 {
                     try
                     {
-                        tradeList.Add(new TradeData
+                        trades.Add(new TradeData
                         {
-                            Ticket = (long)(t.ticket ?? 0),
-                            Type = t.typeString?.ToString() ?? "",
-                            Symbol = t.symbol?.ToString() ?? "",
-                            LotSize = (double)(t.lotSize ?? 0),
-                            EntryPrice = (double)(t.entryPrice ?? 0),
-                            CurrentPrice = (double)(t.currentPrice ?? 0),
-                            StopLoss = (double)(t.stopLoss ?? 0),
-                            TakeProfit = (double)(t.takeProfit ?? 0),
-                            Profit = (double)(t.profit ?? 0),
-                            Swap = (double)(t.swap ?? 0),
-                            OpenTime = t.openTime?.ToString() ?? "",
+                            Ticket = t.TryGetProperty("ticket", out var tk) ? tk.GetInt64() : 0,
+                            Type = t.TryGetProperty("typeString", out var ts) ? ts.GetString() ?? "" : "",
+                            Symbol = t.TryGetProperty("symbol", out var sy) ? sy.GetString() ?? "" : "",
+                            LotSize = t.TryGetProperty("lotSize", out var ls) ? ls.GetDouble() : 0,
+                            EntryPrice = t.TryGetProperty("entryPrice", out var ep) ? ep.GetDouble() : 0,
+                            CurrentPrice = t.TryGetProperty("currentPrice", out var cp) ? cp.GetDouble() : 0,
+                            StopLoss = t.TryGetProperty("stopLoss", out var sl) ? sl.GetDouble() : 0,
+                            TakeProfit = t.TryGetProperty("takeProfit", out var tp) ? tp.GetDouble() : 0,
+                            Profit = t.TryGetProperty("profit", out var pr) ? pr.GetDouble() : 0,
+                            Swap = t.TryGetProperty("swap", out var sw) ? sw.GetDouble() : 0,
+                            OpenTime = t.TryGetProperty("openTime", out var ot) ? ot.GetString() ?? "" : "",
                             IsOpen = true
                         });
                     }
                     catch { }
                 }
 
-                _store.OpenTrades[key] = tradeList;
+                _store.OpenTrades[key] = trades;
+                Console.WriteLine($"Trades updated: key={key} count={trades.Count}");
             }
 
             return new { success = true };
@@ -190,5 +154,35 @@ public class WorkerController : ControllerBase
         }
 
         return new { success = true, command = "NONE" };
+    }
+
+    private AccountData? ParseAccountData(JsonElement element)
+    {
+        try
+        {
+            return new AccountData
+            {
+                AccountNumber = element.TryGetProperty("accountNumber", out var an) ? an.GetString() ?? "" : "",
+                AccountName = element.TryGetProperty("accountName", out var name) ? name.GetString() ?? "" : "",
+                Server = element.TryGetProperty("server", out var srv) ? srv.GetString() ?? "" : "",
+                Currency = element.TryGetProperty("currency", out var cur) ? cur.GetString() ?? "USD" : "USD",
+                Leverage = element.TryGetProperty("leverage", out var lev) ? lev.GetInt32() : 0,
+                Balance = element.TryGetProperty("balance", out var bal) ? bal.GetDouble() : 0,
+                Equity = element.TryGetProperty("equity", out var eq) ? eq.GetDouble() : 0,
+                Margin = element.TryGetProperty("margin", out var mar) ? mar.GetDouble() : 0,
+                FreeMargin = element.TryGetProperty("freeMargin", out var fm) ? fm.GetDouble() : 0,
+                MarginLevel = element.TryGetProperty("marginLevel", out var ml) ? ml.GetDouble() : 0,
+                Drawdown = element.TryGetProperty("currentDrawdown", out var dd) ? dd.GetDouble() : 0,
+                ProfitToday = element.TryGetProperty("profitToday", out var pt) ? pt.GetDouble() : 0,
+                OpenTrades = element.TryGetProperty("openTrades", out var ot) ? ot.GetInt32() : 0,
+                IsConnected = true,
+                LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+            };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ParseAccountData error: {ex.Message}");
+            return null;
+        }
     }
 }
