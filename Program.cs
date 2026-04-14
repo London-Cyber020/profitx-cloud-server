@@ -12,7 +12,6 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddSingleton<DataStore>();
-builder.Services.AddHostedService<TradingEngine>();
 
 var app = builder.Build();
 
