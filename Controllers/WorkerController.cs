@@ -13,112 +13,161 @@ public class WorkerController : ControllerBase
         _store = store;
     }
 
-    [HttpPost("accountinfo")]
-    public object AccountInfo([FromBody] WorkerAccountRequest request)
+    [HttpPost("connect")]
+    public object Connect([FromBody] dynamic request)
     {
-        if (request == null) return new { success = false };
-
-        string key = $"{request.UserId}_{request.Mt5Login}";
-
-        if (request.Data != null)
+        try
         {
-            _store.AccountsData[key] = new AccountData
-            {
-                AccountNumber = request.Data.GetValueOrDefault("accountNumber", ""),
-                AccountName = request.Data.GetValueOrDefault("accountName", ""),
-                Server = request.Data.GetValueOrDefault("server", ""),
-                Currency = request.Data.GetValueOrDefault("currency", "USD"),
-                Leverage = int.TryParse(request.Data.GetValueOrDefault("leverage", "0"), out int lev) ? lev : 0,
-                Balance = double.TryParse(request.Data.GetValueOrDefault("balance", "0"), out double bal) ? bal : 0,
-                Equity = double.TryParse(request.Data.GetValueOrDefault("equity", "0"), out double eq) ? eq : 0,
-                Margin = double.TryParse(request.Data.GetValueOrDefault("margin", "0"), out double mar) ? mar : 0,
-                FreeMargin = double.TryParse(request.Data.GetValueOrDefault("freeMargin", "0"), out double fm) ? fm : 0,
-                MarginLevel = double.TryParse(request.Data.GetValueOrDefault("marginLevel", "0"), out double ml) ? ml : 0,
-                Drawdown = double.TryParse(request.Data.GetValueOrDefault("currentDrawdown", "0"), out double dd) ? dd : 0,
-                ProfitToday = double.TryParse(request.Data.GetValueOrDefault("profitToday", "0"), out double pt) ? pt : 0,
-                OpenTrades = int.TryParse(request.Data.GetValueOrDefault("openTrades", "0"), out int ot) ? ot : 0,
-                IsConnected = true,
-                LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-            };
-        }
+            string userId = request?.userId?.ToString() ?? "";
+            string mt5Login = request?.mt5Login?.ToString() ?? "";
+            string server = request?.server?.ToString() ?? "";
 
-        return new { success = true };
+            string key = $"{userId}_{mt5Login}";
+
+            Console.WriteLine($"Worker connect: {key}");
+
+            _store.UserConnections[key] = new UserMT5Connection
+            {
+                UserId = userId,
+                Mt5Login = mt5Login,
+                Mt5Server = server,
+                IsConnected = true,
+                ConnectedAt = DateTime.Now
+            };
+
+            // Also store account data if provided
+            if (request?.account != null)
+            {
+                try
+                {
+                    var acc = request.account;
+                    _store.AccountsData[key] = new AccountData
+                    {
+                        AccountNumber = acc.accountNumber?.ToString() ?? "",
+                        AccountName = acc.accountName?.ToString() ?? "",
+                        Server = acc.server?.ToString() ?? "",
+                        Currency = acc.currency?.ToString() ?? "USD",
+                        Leverage = (int)(acc.leverage ?? 0),
+                        Balance = (double)(acc.balance ?? 0),
+                        Equity = (double)(acc.equity ?? 0),
+                        Margin = (double)(acc.margin ?? 0),
+                        FreeMargin = (double)(acc.freeMargin ?? 0),
+                        MarginLevel = (double)(acc.marginLevel ?? 0),
+                        Drawdown = (double)(acc.currentDrawdown ?? 0),
+                        ProfitToday = (double)(acc.profitToday ?? 0),
+                        OpenTrades = (int)(acc.openTrades ?? 0),
+                        IsConnected = true,
+                        LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                    };
+
+                    Console.WriteLine($"Account data stored: Balance=${_store.AccountsData[key].Balance}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Account parse error: {ex.Message}");
+                }
+            }
+
+            return new { success = true, message = "Registered" };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Connect error: {ex.Message}");
+            return new { success = false, message = ex.Message };
+        }
+    }
+
+    [HttpPost("accountinfo")]
+    public object AccountInfo([FromBody] dynamic request)
+    {
+        try
+        {
+            string userId = request?.userId?.ToString() ?? "";
+            string mt5Login = request?.mt5Login?.ToString() ?? "";
+            string key = $"{userId}_{mt5Login}";
+
+            Console.WriteLine($"Worker accountinfo: {key}");
+
+            if (request?.data != null)
+            {
+                var d = request.data;
+                _store.AccountsData[key] = new AccountData
+                {
+                    AccountNumber = d.accountNumber?.ToString() ?? "",
+                    AccountName = d.accountName?.ToString() ?? "",
+                    Server = d.server?.ToString() ?? "",
+                    Currency = d.currency?.ToString() ?? "USD",
+                    Leverage = (int)(d.leverage ?? 0),
+                    Balance = (double)(d.balance ?? 0),
+                    Equity = (double)(d.equity ?? 0),
+                    Margin = (double)(d.margin ?? 0),
+                    FreeMargin = (double)(d.freeMargin ?? 0),
+                    MarginLevel = (double)(d.marginLevel ?? 0),
+                    Drawdown = (double)(d.currentDrawdown ?? 0),
+                    ProfitToday = (double)(d.profitToday ?? 0),
+                    OpenTrades = (int)(d.openTrades ?? 0),
+                    IsConnected = true,
+                    LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                };
+
+                Console.WriteLine($"Account updated: Balance=${_store.AccountsData[key].Balance}");
+            }
+
+            return new { success = true };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"AccountInfo error: {ex.Message}");
+            return new { success = false, message = ex.Message };
+        }
     }
 
     [HttpPost("opentrades")]
-    public object OpenTrades([FromBody] WorkerTradesRequest request)
+    public object OpenTrades([FromBody] dynamic request)
     {
-        if (request == null) return new { success = false };
-
-        string key = $"{request.UserId}_{request.Mt5Login}";
-
-        if (request.Trades != null)
+        try
         {
-            var tradeList = new List<TradeData>();
-            foreach (var t in request.Trades)
+            string userId = request?.userId?.ToString() ?? "";
+            string mt5Login = request?.mt5Login?.ToString() ?? "";
+            string key = $"{userId}_{mt5Login}";
+
+            if (request?.trades != null)
             {
-                tradeList.Add(new TradeData
+                var tradeList = new List<TradeData>();
+
+                foreach (var t in request.trades)
                 {
-                    Ticket = t.GetValueOrDefault("ticket", 0L) is long tk ? tk : 0,
-                    Type = t.GetValueOrDefault("typeString", "")?.ToString() ?? "",
-                    Symbol = t.GetValueOrDefault("symbol", "")?.ToString() ?? "",
-                    LotSize = t.GetValueOrDefault("lotSize", 0.0) is double ls ? ls : 0,
-                    EntryPrice = t.GetValueOrDefault("entryPrice", 0.0) is double ep ? ep : 0,
-                    CurrentPrice = t.GetValueOrDefault("currentPrice", 0.0) is double cp ? cp : 0,
-                    StopLoss = t.GetValueOrDefault("stopLoss", 0.0) is double sl ? sl : 0,
-                    TakeProfit = t.GetValueOrDefault("takeProfit", 0.0) is double tp ? tp : 0,
-                    Profit = t.GetValueOrDefault("profit", 0.0) is double pr ? pr : 0,
-                    Swap = t.GetValueOrDefault("swap", 0.0) is double sw ? sw : 0,
-                    OpenTime = t.GetValueOrDefault("openTime", "")?.ToString() ?? "",
-                    IsOpen = true
-                });
+                    try
+                    {
+                        tradeList.Add(new TradeData
+                        {
+                            Ticket = (long)(t.ticket ?? 0),
+                            Type = t.typeString?.ToString() ?? "",
+                            Symbol = t.symbol?.ToString() ?? "",
+                            LotSize = (double)(t.lotSize ?? 0),
+                            EntryPrice = (double)(t.entryPrice ?? 0),
+                            CurrentPrice = (double)(t.currentPrice ?? 0),
+                            StopLoss = (double)(t.stopLoss ?? 0),
+                            TakeProfit = (double)(t.takeProfit ?? 0),
+                            Profit = (double)(t.profit ?? 0),
+                            Swap = (double)(t.swap ?? 0),
+                            OpenTime = t.openTime?.ToString() ?? "",
+                            IsOpen = true
+                        });
+                    }
+                    catch { }
+                }
+
+                _store.OpenTrades[key] = tradeList;
             }
-            _store.OpenTrades[key] = tradeList;
+
+            return new { success = true };
         }
-
-        return new { success = true };
-    }
-
-    [HttpPost("connect")]
-    public object Connect([FromBody] WorkerConnectRequest request)
-    {
-        if (request == null) return new { success = false };
-
-        string key = $"{request.UserId}_{request.Mt5Login}";
-
-        _store.UserConnections[key] = new UserMT5Connection
+        catch (Exception ex)
         {
-            UserId = request.UserId,
-            Mt5Login = request.Mt5Login,
-            Mt5Server = request.Server,
-            IsConnected = true,
-            ConnectedAt = DateTime.Now
-        };
-
-        if (request.Account != null)
-        {
-            _store.AccountsData[key] = new AccountData
-            {
-                AccountNumber = request.Account.GetValueOrDefault("accountNumber", "")?.ToString() ?? "",
-                AccountName = request.Account.GetValueOrDefault("accountName", "")?.ToString() ?? "",
-                Server = request.Account.GetValueOrDefault("server", "")?.ToString() ?? "",
-                Currency = request.Account.GetValueOrDefault("currency", "USD")?.ToString() ?? "USD",
-                Leverage = Convert.ToInt32(request.Account.GetValueOrDefault("leverage", 0)),
-                Balance = Convert.ToDouble(request.Account.GetValueOrDefault("balance", 0.0)),
-                Equity = Convert.ToDouble(request.Account.GetValueOrDefault("equity", 0.0)),
-                Margin = Convert.ToDouble(request.Account.GetValueOrDefault("margin", 0.0)),
-                FreeMargin = Convert.ToDouble(request.Account.GetValueOrDefault("freeMargin", 0.0)),
-                MarginLevel = Convert.ToDouble(request.Account.GetValueOrDefault("marginLevel", 0.0)),
-                Drawdown = Convert.ToDouble(request.Account.GetValueOrDefault("currentDrawdown", 0.0)),
-                OpenTrades = Convert.ToInt32(request.Account.GetValueOrDefault("openTrades", 0)),
-                IsConnected = true,
-                LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
-            };
+            Console.WriteLine($"OpenTrades error: {ex.Message}");
+            return new { success = false, message = ex.Message };
         }
-
-        Console.WriteLine($"Worker connected: {request.Mt5Login} on {request.Server}");
-
-        return new { success = true, message = "Registered" };
     }
 
     [HttpGet("commands")]
@@ -126,7 +175,6 @@ public class WorkerController : ControllerBase
     {
         string key = $"{userId}_{mt5Login}";
 
-        // Check if there's a pending bot start/stop
         if (_store.ActiveBots.ContainsKey(key))
         {
             var bot = _store.ActiveBots[key];
@@ -143,26 +191,4 @@ public class WorkerController : ControllerBase
 
         return new { success = true, command = "NONE" };
     }
-}
-
-public class WorkerAccountRequest
-{
-    public string UserId { get; set; } = "";
-    public string Mt5Login { get; set; } = "";
-    public Dictionary<string, string>? Data { get; set; }
-}
-
-public class WorkerTradesRequest
-{
-    public string UserId { get; set; } = "";
-    public string Mt5Login { get; set; } = "";
-    public List<Dictionary<string, object>>? Trades { get; set; }
-}
-
-public class WorkerConnectRequest
-{
-    public string UserId { get; set; } = "";
-    public string Mt5Login { get; set; } = "";
-    public string Server { get; set; } = "";
-    public Dictionary<string, object>? Account { get; set; }
 }
