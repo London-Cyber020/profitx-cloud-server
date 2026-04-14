@@ -29,19 +29,167 @@ public class TradingController : ControllerBase
             Mt5Login = request.Login,
             Mt5Password = request.Password,
             Mt5Server = request.Server,
-            IsConnected = false,
+            IsConnected = true,
             ConnectedAt = DateTime.Now
         };
 
         Console.WriteLine($"MT5 credentials stored: {request.Login} on {request.Server}");
-        Console.WriteLine("Waiting for Python Worker to connect...");
 
         return new
         {
             success = true,
-            message = "MT5 credentials saved!\n\nMake sure Python Worker is running on your PC.\nPull down to refresh dashboard.",
+            message = "MT5 credentials saved!\n\nMake sure Python Worker is running on PC.",
             login = request.Login,
             server = request.Server
+        };
+    }
+
+    [HttpGet("accountinfo")]
+    public object AccountInfo(string userId = "", string mt5Login = "")
+    {
+        string key = $"{userId}_{mt5Login}";
+
+        Console.WriteLine($"AccountInfo request: key={key}");
+
+        // Check ALL possible keys for data
+        AccountData? data = null;
+
+        // Try exact key
+        if (_store.AccountsData.ContainsKey(key))
+        {
+            data = _store.AccountsData[key];
+            Console.WriteLine($"Found data with key: {key}");
+        }
+
+        // Try finding by mt5Login only
+        if (data == null || data.Balance == 0)
+        {
+            foreach (var kvp in _store.AccountsData)
+            {
+                if (kvp.Key.Contains(mt5Login) && kvp.Value.Balance > 0)
+                {
+                    data = kvp.Value;
+                    Console.WriteLine($"Found data with partial key: {kvp.Key}");
+                    break;
+                }
+            }
+        }
+
+        // Try finding by userId only
+        if (data == null || data.Balance == 0)
+        {
+            foreach (var kvp in _store.AccountsData)
+            {
+                if (kvp.Key.Contains(userId) && kvp.Value.Balance > 0)
+                {
+                    data = kvp.Value;
+                    Console.WriteLine($"Found data with userId key: {kvp.Key}");
+                    break;
+                }
+            }
+        }
+
+        // Try any data that has balance
+        if (data == null || data.Balance == 0)
+        {
+            foreach (var kvp in _store.AccountsData)
+            {
+                if (kvp.Value.Balance > 0)
+                {
+                    data = kvp.Value;
+                    Console.WriteLine($"Found data with any key: {kvp.Key}");
+                    break;
+                }
+            }
+        }
+
+        if (data != null && data.Balance > 0)
+        {
+            return new
+            {
+                success = true,
+                account = new
+                {
+                    accountNumber = data.AccountNumber,
+                    accountName = data.AccountName,
+                    server = data.Server,
+                    currency = data.Currency,
+                    leverage = data.Leverage,
+                    balance = data.Balance,
+                    equity = data.Equity,
+                    margin = data.Margin,
+                    freeMargin = data.FreeMargin,
+                    marginLevel = data.MarginLevel,
+                    currentDrawdown = data.Drawdown,
+                    profitToday = data.ProfitToday,
+                    profitThisWeek = 0.0,
+                    profitThisMonth = 0.0,
+                    totalTrades = 0,
+                    winningTrades = 0,
+                    losingTrades = 0,
+                    openTrades = data.OpenTrades,
+                    isConnected = data.IsConnected,
+                    lastUpdate = data.LastUpdate
+                }
+            };
+        }
+
+        // Return connection info if exists but no balance data
+        if (_store.UserConnections.ContainsKey(key))
+        {
+            var c = _store.UserConnections[key];
+            return new
+            {
+                success = true,
+                account = new
+                {
+                    accountNumber = c.Mt5Login,
+                    accountName = "",
+                    server = c.Mt5Server,
+                    currency = "USD",
+                    leverage = 0,
+                    balance = 0.0,
+                    equity = 0.0,
+                    margin = 0.0,
+                    freeMargin = 0.0,
+                    marginLevel = 0.0,
+                    currentDrawdown = 0.0,
+                    profitToday = 0.0,
+                    profitThisWeek = 0.0,
+                    profitThisMonth = 0.0,
+                    totalTrades = 0,
+                    winningTrades = 0,
+                    losingTrades = 0,
+                    openTrades = 0,
+                    isConnected = c.IsConnected,
+                    lastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                }
+            };
+        }
+
+        // Log all available keys for debugging
+        Console.WriteLine($"Available AccountsData keys:");
+        foreach (var k in _store.AccountsData.Keys)
+            Console.WriteLine($"  - {k} (Balance: {_store.AccountsData[k].Balance})");
+
+        Console.WriteLine($"Available UserConnections keys:");
+        foreach (var k in _store.UserConnections.Keys)
+            Console.WriteLine($"  - {k}");
+
+        return new
+        {
+            success = false,
+            message = "MT5 not connected",
+            account = new
+            {
+                accountNumber = "", accountName = "", server = "",
+                currency = "USD", leverage = 0,
+                balance = 0.0, equity = 0.0, margin = 0.0, freeMargin = 0.0,
+                marginLevel = 0.0, currentDrawdown = 0.0, profitToday = 0.0,
+                profitThisWeek = 0.0, profitThisMonth = 0.0,
+                totalTrades = 0, winningTrades = 0, losingTrades = 0,
+                openTrades = 0, isConnected = false, lastUpdate = ""
+            }
         };
     }
 
@@ -66,7 +214,15 @@ public class TradingController : ControllerBase
         };
 
         Console.WriteLine($"BOT STARTED: {request.Symbol} {request.Strategy} Lot:{request.LotSize}");
-        return new { success = true, message = $"Bot started!\n\nSymbol: {request.Symbol}\nStrategy: {request.Strategy}", symbol = request.Symbol, strategy = request.Strategy, lotSize = request.LotSize };
+
+        return new
+        {
+            success = true,
+            message = $"Bot started!\n\nSymbol: {request.Symbol}\nStrategy: {request.Strategy}",
+            symbol = request.Symbol,
+            strategy = request.Strategy,
+            lotSize = request.LotSize
+        };
     }
 
     [HttpPost("stopbot")]
@@ -75,6 +231,7 @@ public class TradingController : ControllerBase
         if (request == null) return new { success = false, message = "No data" };
 
         string key = $"{request.UserId}_{request.Mt5Login}";
+
         if (_store.ActiveBots.ContainsKey(key))
         {
             _store.ActiveBots[key].IsRunning = false;
@@ -88,44 +245,78 @@ public class TradingController : ControllerBase
     public object BotStatus(string userId = "", string mt5Login = "")
     {
         string key = $"{userId}_{mt5Login}";
+
         if (_store.ActiveBots.ContainsKey(key))
         {
             var bot = _store.ActiveBots[key];
             var rt = DateTime.Now - bot.StartTime;
-            return new { success = true, isRunning = bot.IsRunning, symbol = bot.Symbol, strategy = bot.Strategy, lotSize = bot.LotSize, maxTrades = bot.MaxTrades, status = bot.Status, runningTime = bot.IsRunning ? $"{rt.Hours:D2}:{rt.Minutes:D2}:{rt.Seconds:D2}" : "00:00:00" };
+
+            return new
+            {
+                success = true,
+                isRunning = bot.IsRunning,
+                symbol = bot.Symbol,
+                strategy = bot.Strategy,
+                lotSize = bot.LotSize,
+                maxTrades = bot.MaxTrades,
+                status = bot.Status,
+                runningTime = bot.IsRunning ?
+                    $"{rt.Hours:D2}:{rt.Minutes:D2}:{rt.Seconds:D2}" : "00:00:00"
+            };
         }
+
         return new { success = true, isRunning = false, status = "Not started" };
-    }
-
-    [HttpGet("accountinfo")]
-    public object AccountInfo(string userId = "", string mt5Login = "")
-    {
-        string key = $"{userId}_{mt5Login}";
-
-        if (_store.AccountsData.ContainsKey(key))
-        {
-            var d = _store.AccountsData[key];
-            return new { success = true, account = new { accountNumber = d.AccountNumber, accountName = d.AccountName, server = d.Server, currency = d.Currency, leverage = d.Leverage, balance = d.Balance, equity = d.Equity, margin = d.Margin, freeMargin = d.FreeMargin, marginLevel = d.MarginLevel, currentDrawdown = d.Drawdown, profitToday = d.ProfitToday, profitThisWeek = 0.0, profitThisMonth = 0.0, totalTrades = 0, winningTrades = 0, losingTrades = 0, openTrades = d.OpenTrades, isConnected = d.IsConnected, lastUpdate = d.LastUpdate } };
-        }
-
-        if (_store.UserConnections.ContainsKey(key))
-        {
-            var c = _store.UserConnections[key];
-            return new { success = true, account = new { accountNumber = c.Mt5Login, accountName = "", server = c.Mt5Server, currency = "USD", leverage = 0, balance = 0.0, equity = 0.0, margin = 0.0, freeMargin = 0.0, marginLevel = 0.0, currentDrawdown = 0.0, profitToday = 0.0, profitThisWeek = 0.0, profitThisMonth = 0.0, totalTrades = 0, winningTrades = 0, losingTrades = 0, openTrades = 0, isConnected = c.IsConnected, lastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") } };
-        }
-
-        return new { success = false, message = "MT5 not connected", account = new { accountNumber = "", accountName = "", server = "", currency = "USD", leverage = 0, balance = 0.0, equity = 0.0, margin = 0.0, freeMargin = 0.0, marginLevel = 0.0, currentDrawdown = 0.0, profitToday = 0.0, profitThisWeek = 0.0, profitThisMonth = 0.0, totalTrades = 0, winningTrades = 0, losingTrades = 0, openTrades = 0, isConnected = false, lastUpdate = "" } };
     }
 
     [HttpGet("opentrades")]
     public object OpenTrades(string userId = "", string mt5Login = "")
     {
         string key = $"{userId}_{mt5Login}";
+
+        // Search all keys
+        List<TradeData>? trades = null;
+
         if (_store.OpenTrades.ContainsKey(key))
+            trades = _store.OpenTrades[key];
+
+        if (trades == null)
         {
-            var t = _store.OpenTrades[key];
-            return new { success = true, trades = t.Select(x => new { ticket = x.Ticket, type = x.Type == "BUY" ? 0 : 1, typeString = x.Type, symbol = x.Symbol, lotSize = x.LotSize, entryPrice = x.EntryPrice, currentPrice = x.CurrentPrice, stopLoss = x.StopLoss, takeProfit = x.TakeProfit, profit = x.Profit, swap = x.Swap, commission = 0, openTime = x.OpenTime, isOpen = x.IsOpen }), count = t.Count };
+            foreach (var kvp in _store.OpenTrades)
+            {
+                if (kvp.Key.Contains(mt5Login) || kvp.Key.Contains(userId))
+                {
+                    trades = kvp.Value;
+                    break;
+                }
+            }
         }
+
+        if (trades != null)
+        {
+            return new
+            {
+                success = true,
+                trades = trades.Select(x => new
+                {
+                    ticket = x.Ticket,
+                    type = x.Type == "BUY" ? 0 : 1,
+                    typeString = x.Type,
+                    symbol = x.Symbol,
+                    lotSize = x.LotSize,
+                    entryPrice = x.EntryPrice,
+                    currentPrice = x.CurrentPrice,
+                    stopLoss = x.StopLoss,
+                    takeProfit = x.TakeProfit,
+                    profit = x.Profit,
+                    swap = x.Swap,
+                    commission = 0,
+                    openTime = x.OpenTime,
+                    isOpen = x.IsOpen
+                }),
+                count = trades.Count
+            };
+        }
+
         return new { success = true, trades = new List<object>(), count = 0 };
     }
 
@@ -133,16 +324,50 @@ public class TradingController : ControllerBase
     public object History(string userId = "", string mt5Login = "", int days = 30)
     {
         string key = $"{userId}_{mt5Login}";
+
         if (_store.TradeHistory.ContainsKey(key))
             return new { success = true, trades = _store.TradeHistory[key], count = _store.TradeHistory[key].Count };
+
         return new { success = true, trades = new List<object>(), count = 0 };
     }
 
     [HttpGet("symbols")]
-    public object Symbols() => new { success = true, symbols = new[] { "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "US30", "US100", "US500", "USOIL" } };
+    public object Symbols() => new
+    {
+        success = true,
+        symbols = new[]
+        {
+            "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD",
+            "USDCAD", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY",
+            "XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD",
+            "US30", "US100", "US500", "USOIL"
+        }
+    };
 
     [HttpGet("strategies")]
-    public object Strategies() => new { success = true, strategies = new object[] { new { name = "ICT", fullName = "Inner Circle Trader" }, new { name = "SMC", fullName = "Smart Money Concepts" } } };
+    public object Strategies() => new
+    {
+        success = true,
+        strategies = new object[]
+        {
+            new { name = "ICT", fullName = "Inner Circle Trader" },
+            new { name = "SMC", fullName = "Smart Money Concepts" }
+        }
+    };
+
+    // DEBUG: Show all stored data keys
+    [HttpGet("debug")]
+    public object Debug()
+    {
+        return new
+        {
+            accountsDataKeys = _store.AccountsData.Keys.ToList(),
+            accountsDataValues = _store.AccountsData.Select(x => new { key = x.Key, balance = x.Value.Balance, connected = x.Value.IsConnected }).ToList(),
+            userConnectionKeys = _store.UserConnections.Keys.ToList(),
+            activeBotsKeys = _store.ActiveBots.Keys.ToList(),
+            openTradesKeys = _store.OpenTrades.Keys.ToList()
+        };
+    }
 }
 
 public class ConnectRequest
