@@ -14,36 +14,42 @@ public class WorkerController : ControllerBase
         _store = store;
     }
 
+    // ── Worker Connect / Register ─────────────────────────────
     [HttpPost("connect")]
     public object Connect([FromBody] JsonElement body)
     {
         try
         {
-            string userId = body.TryGetProperty("userId", out var u) ? u.GetString() ?? "" : "";
-            string mt5Login = body.TryGetProperty("mt5Login", out var m) ? m.GetString() ?? "" : "";
-            string server = body.TryGetProperty("server", out var s) ? s.GetString() ?? "" : "";
-
-            string key = $"{userId}_{mt5Login}";
+            string userId   = GetString(body, "userId");
+            string mt5Login = GetString(body, "mt5Login");
+            string server   = GetString(body, "server");
+            string key      = $"{userId}_{mt5Login}";
 
             Console.WriteLine($"Worker CONNECT: key={key}");
 
+            // Register connection (no password stored)
             _store.UserConnections[key] = new UserMT5Connection
             {
-                UserId = userId,
-                Mt5Login = mt5Login,
-                Mt5Server = server,
+                UserId      = userId,
+                Mt5Login    = mt5Login,
+                Mt5Server   = server,
                 IsConnected = true,
-                ConnectedAt = DateTime.Now
+                ConnectedAt = DateTime.UtcNow
             };
 
-            // Parse account data
+            // Record heartbeat
+            _store.UpdateWorkerHeartbeat(key);
+
+            // Store account data if provided
             if (body.TryGetProperty("account", out var acc))
             {
                 var data = ParseAccountData(acc);
                 if (data != null && data.Balance > 0)
                 {
                     _store.AccountsData[key] = data;
-                    Console.WriteLine($"Account stored: Balance=${data.Balance} Equity=${data.Equity}");
+                    Console.WriteLine(
+                        $"Account stored: Balance=${data.Balance} " +
+                        $"Equity=${data.Equity}");
                 }
             }
 
@@ -57,14 +63,18 @@ public class WorkerController : ControllerBase
         }
     }
 
+    // ── Account Info Push ─────────────────────────────────────
     [HttpPost("accountinfo")]
     public object AccountInfo([FromBody] JsonElement body)
     {
         try
         {
-            string userId = body.TryGetProperty("userId", out var u) ? u.GetString() ?? "" : "";
-            string mt5Login = body.TryGetProperty("mt5Login", out var m) ? m.GetString() ?? "" : "";
-            string key = $"{userId}_{mt5Login}";
+            string userId   = GetString(body, "userId");
+            string mt5Login = GetString(body, "mt5Login");
+            string key      = $"{userId}_{mt5Login}";
+
+            // Update heartbeat on every push
+            _store.UpdateWorkerHeartbeat(key);
 
             if (body.TryGetProperty("data", out var dataElement))
             {
@@ -72,7 +82,10 @@ public class WorkerController : ControllerBase
                 if (data != null)
                 {
                     _store.AccountsData[key] = data;
-                    Console.WriteLine($"Account updated: key={key} Balance=${data.Balance}");
+                    Console.WriteLine(
+                        $"Account updated: key={key} " +
+                        $"Balance=${data.Balance} " +
+                        $"ProfitToday=${data.ProfitToday}");
                 }
             }
 
@@ -85,14 +98,18 @@ public class WorkerController : ControllerBase
         }
     }
 
+    // ── Open Trades Push ──────────────────────────────────────
     [HttpPost("opentrades")]
     public object OpenTrades([FromBody] JsonElement body)
     {
         try
         {
-            string userId = body.TryGetProperty("userId", out var u) ? u.GetString() ?? "" : "";
-            string mt5Login = body.TryGetProperty("mt5Login", out var m) ? m.GetString() ?? "" : "";
-            string key = $"{userId}_{mt5Login}";
+            string userId   = GetString(body, "userId");
+            string mt5Login = GetString(body, "mt5Login");
+            string key      = $"{userId}_{mt5Login}";
+
+            // Update heartbeat
+            _store.UpdateWorkerHeartbeat(key);
 
             if (body.TryGetProperty("trades", out var tradesElement))
             {
@@ -104,25 +121,26 @@ public class WorkerController : ControllerBase
                     {
                         trades.Add(new TradeData
                         {
-                            Ticket = t.TryGetProperty("ticket", out var tk) ? tk.GetInt64() : 0,
-                            Type = t.TryGetProperty("typeString", out var ts) ? ts.GetString() ?? "" : "",
-                            Symbol = t.TryGetProperty("symbol", out var sy) ? sy.GetString() ?? "" : "",
-                            LotSize = t.TryGetProperty("lotSize", out var ls) ? ls.GetDouble() : 0,
-                            EntryPrice = t.TryGetProperty("entryPrice", out var ep) ? ep.GetDouble() : 0,
-                            CurrentPrice = t.TryGetProperty("currentPrice", out var cp) ? cp.GetDouble() : 0,
-                            StopLoss = t.TryGetProperty("stopLoss", out var sl) ? sl.GetDouble() : 0,
-                            TakeProfit = t.TryGetProperty("takeProfit", out var tp) ? tp.GetDouble() : 0,
-                            Profit = t.TryGetProperty("profit", out var pr) ? pr.GetDouble() : 0,
-                            Swap = t.TryGetProperty("swap", out var sw) ? sw.GetDouble() : 0,
-                            OpenTime = t.TryGetProperty("openTime", out var ot) ? ot.GetString() ?? "" : "",
-                            IsOpen = true
+                            Ticket       = GetLong(t, "ticket"),
+                            Type         = GetString(t, "typeString"),
+                            Symbol       = GetString(t, "symbol"),
+                            LotSize      = GetDouble(t, "lotSize"),
+                            EntryPrice   = GetDouble(t, "entryPrice"),
+                            CurrentPrice = GetDouble(t, "currentPrice"),
+                            StopLoss     = GetDouble(t, "stopLoss"),
+                            TakeProfit   = GetDouble(t, "takeProfit"),
+                            Profit       = GetDouble(t, "profit"),
+                            Swap         = GetDouble(t, "swap"),
+                            OpenTime     = GetString(t, "openTime"),
+                            IsOpen       = true
                         });
                     }
-                    catch { }
+                    catch { /* Skip malformed trade */ }
                 }
 
                 _store.OpenTrades[key] = trades;
-                Console.WriteLine($"Trades updated: key={key} count={trades.Count}");
+                Console.WriteLine(
+                    $"Trades updated: key={key} count={trades.Count}");
             }
 
             return new { success = true };
@@ -134,27 +152,97 @@ public class WorkerController : ControllerBase
         }
     }
 
+    // ── Trade History Push ────────────────────────────────────
+    [HttpPost("tradehistory")]
+    public object TradeHistory([FromBody] JsonElement body)
+    {
+        try
+        {
+            string userId   = GetString(body, "userId");
+            string mt5Login = GetString(body, "mt5Login");
+            string key      = $"{userId}_{mt5Login}";
+
+            _store.UpdateWorkerHeartbeat(key);
+
+            if (body.TryGetProperty("trades", out var tradesElement))
+            {
+                var trades = new List<TradeData>();
+
+                foreach (var t in tradesElement.EnumerateArray())
+                {
+                    try
+                    {
+                        trades.Add(new TradeData
+                        {
+                            Ticket       = GetLong(t, "ticket"),
+                            Type         = GetString(t, "typeString"),
+                            Symbol       = GetString(t, "symbol"),
+                            LotSize      = GetDouble(t, "lotSize"),
+                            EntryPrice   = GetDouble(t, "entryPrice"),
+                            CurrentPrice = GetDouble(t, "currentPrice"),
+                            Profit       = GetDouble(t, "profit"),
+                            Swap         = GetDouble(t, "swap"),
+                            OpenTime     = GetString(t, "openTime"),
+                            CloseTime    = GetString(t, "closeTime"),
+                            IsOpen       = false
+                        });
+                    }
+                    catch { /* Skip malformed */ }
+                }
+
+                _store.TradeHistory[key] = trades;
+                Console.WriteLine(
+                    $"History updated: key={key} count={trades.Count}");
+            }
+
+            return new { success = true };
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"TradeHistory error: {ex.Message}");
+            return new { success = false, message = ex.Message };
+        }
+    }
+
+    // ── Commands Poll ─────────────────────────────────────────
     [HttpGet("commands")]
     public object Commands(string userId = "", string mt5Login = "")
     {
         string key = $"{userId}_{mt5Login}";
 
-        if (_store.ActiveBots.ContainsKey(key))
+        // Update heartbeat every poll - this is the liveness signal
+        _store.UpdateWorkerHeartbeat(key);
+
+        if (_store.ActiveBots.TryGetValue(key, out var bot))
         {
-            var bot = _store.ActiveBots[key];
             return new
             {
-                success = true,
-                command = bot.IsRunning ? "START" : "STOP",
-                symbol = bot.Symbol,
-                strategy = bot.Strategy,
-                lotSize = bot.LotSize,
-                maxTrades = bot.MaxTrades
+                success      = true,
+                command      = bot.IsRunning ? "START" : "STOP",
+                symbol       = bot.Symbol,
+                strategy     = bot.Strategy,
+                lotSize      = bot.LotSize,
+                maxTrades    = bot.MaxTrades,
+                maxDailyLoss = bot.MaxDailyLoss,
+                maxDrawdown  = bot.MaxDrawdown
             };
         }
 
         return new { success = true, command = "NONE" };
     }
+
+    // ── Private Helpers ───────────────────────────────────────
+    private static string GetString(JsonElement el, string prop) =>
+        el.TryGetProperty(prop, out var v) ? v.GetString() ?? "" : "";
+
+    private static double GetDouble(JsonElement el, string prop) =>
+        el.TryGetProperty(prop, out var v) ? v.GetDouble() : 0;
+
+    private static long GetLong(JsonElement el, string prop) =>
+        el.TryGetProperty(prop, out var v) ? v.GetInt64() : 0;
+
+    private static int GetInt(JsonElement el, string prop) =>
+        el.TryGetProperty(prop, out var v) ? v.GetInt32() : 0;
 
     private AccountData? ParseAccountData(JsonElement element)
     {
@@ -162,21 +250,27 @@ public class WorkerController : ControllerBase
         {
             return new AccountData
             {
-                AccountNumber = element.TryGetProperty("accountNumber", out var an) ? an.GetString() ?? "" : "",
-                AccountName = element.TryGetProperty("accountName", out var name) ? name.GetString() ?? "" : "",
-                Server = element.TryGetProperty("server", out var srv) ? srv.GetString() ?? "" : "",
-                Currency = element.TryGetProperty("currency", out var cur) ? cur.GetString() ?? "USD" : "USD",
-                Leverage = element.TryGetProperty("leverage", out var lev) ? lev.GetInt32() : 0,
-                Balance = element.TryGetProperty("balance", out var bal) ? bal.GetDouble() : 0,
-                Equity = element.TryGetProperty("equity", out var eq) ? eq.GetDouble() : 0,
-                Margin = element.TryGetProperty("margin", out var mar) ? mar.GetDouble() : 0,
-                FreeMargin = element.TryGetProperty("freeMargin", out var fm) ? fm.GetDouble() : 0,
-                MarginLevel = element.TryGetProperty("marginLevel", out var ml) ? ml.GetDouble() : 0,
-                Drawdown = element.TryGetProperty("currentDrawdown", out var dd) ? dd.GetDouble() : 0,
-                ProfitToday = element.TryGetProperty("profitToday", out var pt) ? pt.GetDouble() : 0,
-                OpenTrades = element.TryGetProperty("openTrades", out var ot) ? ot.GetInt32() : 0,
-                IsConnected = true,
-                LastUpdate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                AccountNumber = GetString(element, "accountNumber"),
+                AccountName   = GetString(element, "accountName"),
+                Server        = GetString(element, "server"),
+                Currency      = element.TryGetProperty("currency", out var cur)
+                                ? cur.GetString() ?? "USD" : "USD",
+                Leverage      = GetInt(element, "leverage"),
+                Balance       = GetDouble(element, "balance"),
+                Equity        = GetDouble(element, "equity"),
+                Margin        = GetDouble(element, "margin"),
+                FreeMargin    = GetDouble(element, "freeMargin"),
+                MarginLevel   = GetDouble(element, "marginLevel"),
+                Drawdown      = GetDouble(element, "currentDrawdown"),
+                ProfitToday   = GetDouble(element, "profitToday"),
+                ProfitThisWeek  = GetDouble(element, "profitThisWeek"),
+                ProfitThisMonth = GetDouble(element, "profitThisMonth"),
+                TotalTrades   = GetInt(element, "totalTrades"),
+                WinningTrades = GetInt(element, "winningTrades"),
+                LosingTrades  = GetInt(element, "losingTrades"),
+                OpenTrades    = GetInt(element, "openTrades"),
+                IsConnected   = true,
+                LastUpdate    = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss")
             };
         }
         catch (Exception ex)
