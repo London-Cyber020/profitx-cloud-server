@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using System.Text;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Text;
 
 namespace ProfitX.CloudServer.Controllers;
 
@@ -9,15 +8,17 @@ namespace ProfitX.CloudServer.Controllers;
 [Route("api/[controller]")]
 public class TestController : ControllerBase
 {
+    private const string AppVersion = "3.1";
+
     [HttpGet("ping")]
     public object Ping()
     {
         return new
         {
-            success = true,
-            message = "ProfitX Cloud Trading Server is running!",
-            time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
-            version = "2.0",
+            success   = true,
+            message   = "ProfitX Cloud Trading Server is running!",
+            time      = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss"),
+            version   = AppVersion,
             developer = "London Cyber 2026"
         };
     }
@@ -27,39 +28,60 @@ public class TestController : ControllerBase
     {
         return new
         {
-            success = true,
-            serverName = "ProfitX Cloud Trading Server",
-            version = "2.0",
+            success     = true,
+            serverName  = "ProfitX Cloud Trading Server",
+            version     = AppVersion,
             environment = "Render Cloud"
         };
     }
 
+    // ── Cleanup - ADMIN KEY PROTECTED ─────────────────────────
     [HttpGet("cleanup")]
-    public async Task<object> Cleanup()
+    public async Task<object> Cleanup([FromQuery] string adminKey = "")
     {
-        string apiToken = Environment.GetEnvironmentVariable("METAAPI_TOKEN") ?? "";
+        // Require admin key - never expose this endpoint publicly
+        string expectedKey =
+            Environment.GetEnvironmentVariable("ADMIN_KEY") ?? "";
+
+        if (string.IsNullOrEmpty(expectedKey) || adminKey != expectedKey)
+        {
+            Console.WriteLine("⚠️ Unauthorized cleanup attempt!");
+            return Unauthorized(new
+            {
+                success = false,
+                message = "Unauthorized"
+            });
+        }
+
+        string apiToken =
+            Environment.GetEnvironmentVariable("METAAPI_TOKEN") ?? "";
+
         if (string.IsNullOrEmpty(apiToken))
-            return new { success = false, message = "No token" };
+            return new { success = false, message = "No MetaApi token" };
 
         var http = new HttpClient();
         http.DefaultRequestHeaders.Add("auth-token", apiToken);
         http.Timeout = TimeSpan.FromSeconds(30);
-        string apiUrl = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
+
+        string apiUrl =
+            "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
 
         try
         {
-            var response = await http.GetAsync($"{apiUrl}/users/current/accounts");
+            var response = await http.GetAsync(
+                $"{apiUrl}/users/current/accounts");
             string body = await response.Content.ReadAsStringAsync();
 
             if (!response.IsSuccessStatusCode)
                 return new { success = false, message = body };
 
             var accounts = JArray.Parse(body);
-            var results = new List<object>();
+            var results  = new List<object>();
 
             foreach (var acc in accounts)
             {
-                string accId = acc["_id"]?.ToString() ?? acc["id"]?.ToString() ?? "";
+                string accId    = acc["_id"]?.ToString()
+                                  ?? acc["id"]?.ToString() ?? "";
                 string accLogin = acc["login"]?.ToString() ?? "";
                 string accState = acc["state"]?.ToString() ?? "";
 
@@ -69,24 +91,45 @@ public class TestController : ControllerBase
                 {
                     if (accState == "DEPLOYED" || accState == "DEPLOYING")
                     {
-                        await http.PostAsync($"{apiUrl}/users/current/accounts/{accId}/undeploy",
-                            new StringContent("", Encoding.UTF8, "application/json"));
+                        await http.PostAsync(
+                            $"{apiUrl}/users/current/accounts/{accId}/undeploy",
+                            new StringContent("", Encoding.UTF8,
+                                             "application/json"));
                         await Task.Delay(3000);
                     }
 
-                    var del = await http.DeleteAsync($"{apiUrl}/users/current/accounts/{accId}");
+                    var del = await http.DeleteAsync(
+                        $"{apiUrl}/users/current/accounts/{accId}");
                     string delBody = await del.Content.ReadAsStringAsync();
 
-                    results.Add(new { login = accLogin, id = accId, status = del.IsSuccessStatusCode ? "DELETED" : "FAILED", details = delBody });
+                    results.Add(new
+                    {
+                        login   = accLogin,
+                        id      = accId,
+                        status  = del.IsSuccessStatusCode ? "DELETED" : "FAILED",
+                        details = delBody
+                    });
+
                     await Task.Delay(2000);
                 }
                 catch (Exception ex)
                 {
-                    results.Add(new { login = accLogin, id = accId, status = "ERROR", details = ex.Message });
+                    results.Add(new
+                    {
+                        login   = accLogin,
+                        id      = accId,
+                        status  = "ERROR",
+                        details = ex.Message
+                    });
                 }
             }
 
-            return new { success = true, message = $"Processed {accounts.Count} accounts", results };
+            return new
+            {
+                success = true,
+                message = $"Processed {accounts.Count} accounts",
+                results
+            };
         }
         catch (Exception ex)
         {
@@ -94,40 +137,58 @@ public class TestController : ControllerBase
         }
     }
 
+    // ── Accounts - ADMIN KEY PROTECTED ───────────────────────
     [HttpGet("accounts")]
-    public async Task<object> Accounts()
+    public async Task<object> Accounts([FromQuery] string adminKey = "")
     {
-        string apiToken = Environment.GetEnvironmentVariable("METAAPI_TOKEN") ?? "";
+        string expectedKey =
+            Environment.GetEnvironmentVariable("ADMIN_KEY") ?? "";
+
+        if (string.IsNullOrEmpty(expectedKey) || adminKey != expectedKey)
+            return Unauthorized(new { success = false, message = "Unauthorized" });
+
+        string apiToken =
+            Environment.GetEnvironmentVariable("METAAPI_TOKEN") ?? "";
+
         if (string.IsNullOrEmpty(apiToken))
             return new { success = false, message = "No token" };
 
         var http = new HttpClient();
         http.DefaultRequestHeaders.Add("auth-token", apiToken);
-        string apiUrl = "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
+
+        string apiUrl =
+            "https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai";
 
         try
         {
-            var response = await http.GetAsync($"{apiUrl}/users/current/accounts");
+            var response = await http.GetAsync(
+                $"{apiUrl}/users/current/accounts");
             string body = await response.Content.ReadAsStringAsync();
 
             if (response.IsSuccessStatusCode)
             {
                 var accounts = JArray.Parse(body);
-                var list = new List<object>();
+                var list     = new List<object>();
 
                 foreach (var acc in accounts)
                 {
                     list.Add(new
                     {
-                        id = acc["_id"]?.ToString() ?? acc["id"]?.ToString() ?? "",
-                        login = acc["login"]?.ToString() ?? "",
-                        server = acc["server"]?.ToString() ?? "",
-                        state = acc["state"]?.ToString() ?? "",
+                        id         = acc["_id"]?.ToString()
+                                     ?? acc["id"]?.ToString() ?? "",
+                        login      = acc["login"]?.ToString() ?? "",
+                        server     = acc["server"]?.ToString() ?? "",
+                        state      = acc["state"]?.ToString() ?? "",
                         connection = acc["connectionStatus"]?.ToString() ?? ""
                     });
                 }
 
-                return new { success = true, count = list.Count, accounts = list };
+                return new
+                {
+                    success  = true,
+                    count    = list.Count,
+                    accounts = list
+                };
             }
 
             return new { success = false, message = body };
